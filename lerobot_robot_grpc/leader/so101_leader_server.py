@@ -176,7 +176,7 @@ class SO101LeaderServicer(LeaderServicer):
         return result
 
     def GetObservationFeatureInfo(self, request, context):
-        return iter(self._encode_feature_info(self.robot.observation_features).values())
+        return iter(())
 
     def GetActionFeatureInfo(self, request, context):
         return iter(self._encode_feature_info(self.robot.action_features).values())
@@ -249,14 +249,7 @@ class SO101LeaderServicer(LeaderServicer):
         return Empty()
 
     def GetObservation(self, request, context):
-        if not self._calibration_lock.acquire(blocking=False):
-            raise DeviceNotConnectedError("Cannot get observation: robot is calibrating.")
-        try:
-            raw_obs = self.robot.get_observation()
-        finally:
-            self._calibration_lock.release()
-        obs_feature_info = self._encode_feature_info(self.robot.observation_features)
-        return encode_feature(obs_feature_info, raw_obs)
+        return iter(())
 
     def GetAction(self, request, context):
         if not self._calibration_lock.acquire(blocking=False):
