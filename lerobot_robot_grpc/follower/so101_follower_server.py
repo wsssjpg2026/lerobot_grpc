@@ -2,7 +2,7 @@ import logging
 import time
 import threading
 import traceback
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from pprint import pformat
 from typing import Any
 
@@ -118,7 +118,11 @@ class SO101FollowerServicer(FollowerServicer):
         self._calibrate_error: str | None = None
 
     @staticmethod
-    def _encode_feature_info(feature_info: dict[str, Any]) -> Iterator[device_pb2.OneFeatureInfo]:
+    def _encode_feature_info(feature_info: dict[str, Any]) -> dict[str, device_pb2.OneFeatureInfo]:
+        # Returns a dict (not a generator): encode_feature/load_feature subscript it by key,
+        # so a generator would raise KeyError. The streaming Get*FeatureInfo methods wrap
+        # the result with iter(...values()) to turn it back into a gRPC response stream.
+        result: dict[str, device_pb2.OneFeatureInfo] = {}
         for key, val in feature_info.items():
             if isinstance(val, tuple):
                 shape = device_pb2.ImageShape(H=val[0], W=val[1], C=val[2])
@@ -134,7 +138,7 @@ class SO101FollowerServicer(FollowerServicer):
                 val_type = _protobuf_type_for(val)
                 shape = device_pb2.ImageShape(H=1, W=1, C=1)
                 encoding = device_pb2.Encoding.RAW
-            yield device_pb2.OneFeatureInfo(
+            result[key] = device_pb2.OneFeatureInfo(
                 key=key,
                 criticality=device_pb2.Criticality.CRITICAL,
                 watchdog = device_pb2.WatchDogLevel.A,
@@ -143,15 +147,16 @@ class SO101FollowerServicer(FollowerServicer):
                 encoding=encoding,
                 img_quality=90,
             )
+        return result
 
     def GetObservationFeatureInfo(self, request, context):
-        return self._encode_feature_info(self.robot.observation_features)
+        return iter(self._encode_feature_info(self.robot.observation_features).values())
 
     def GetActionFeatureInfo(self, request, context):
-        return self._encode_feature_info(self.robot.action_features)
+        return iter(self._encode_feature_info(self.robot.action_features).values())
 
     def GetFeedbackFeatureInfo(self, request, context):
-        return self._encode_feature_info(self.robot.action_features)  # Assuming feedback features are the same as action features
+        return iter(self._encode_feature_info(self.robot.action_features).values())  # Assuming feedback features are the same as action features
 
     def Connect(self, request, context):
         if not self.robot.is_connected:
