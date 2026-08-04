@@ -113,7 +113,7 @@ class GRPCLeader(Teleoperator):
         """Cleans up resources, such as closing the gRPC channel."""
         if self.stub:
             try:
-                self.stub.Disconnect(timeout=self.data_timeout_s)
+                self.stub.Disconnect(Empty(), timeout=self.data_timeout_s)
             except grpc.RpcError:
                 logger.debug(f"Failed to notify Disconnect to GRPCLeader at {self.address}.")
         if self.channel:
