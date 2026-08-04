@@ -7,7 +7,7 @@ name = "lerobot_robot_grpc"
 version = "0.1.0"
 description = "gRPC follower/leader devices for lerobot — decoupled from the lerobot source tree."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Yiming Yang" }]
 dependencies = [

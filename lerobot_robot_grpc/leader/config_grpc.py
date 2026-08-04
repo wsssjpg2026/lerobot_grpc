@@ -25,6 +25,5 @@ class GRPCLeaderConfig(TeleoperatorConfig):
     ssl_cert_path: Path | None = None
 
     def __post_init__(self):
-        super().__post_init__()
         if self.use_ssl and not self.ssl_cert_path:
             raise ValueError("'ssl_cert_path' is required when 'use_ssl' is True.")
