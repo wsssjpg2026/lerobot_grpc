@@ -22,6 +22,7 @@ from lerobot.motors import MotorCalibration
 from lerobot.lerobot_types import RobotAction
 from lerobot_robot_grpc.protos import device_pb2
 from lerobot.utils.errors import DeviceNotConnectedError
+from lerobot.utils.utils import move_cursor_up
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,11 @@ class SO101FollowerAdapted(SO101Follower):
             positions = bus.sync_read("Present_Position", motor_names, normalize=False, num_retry=5)
             mins = {motor: min(positions[motor], min_) for motor, min_ in mins.items()}
             maxes = {motor: max(positions[motor], max_) for motor, max_ in maxes.items()}
+            print("\n-------------------------------------------")
+            print(f"{'NAME':<15} | {'MIN':>6} | {'POS':>6} | {'MAX':>6}")
+            for motor in motor_names:
+                print(f"{motor:<15} | {mins[motor]:>6} | {positions[motor]:>6} | {maxes[motor]:>6}")
+            move_cursor_up(len(motor_names) + 3)
             time.sleep(0.02)
 
         same_min_max = [motor for motor in motor_names if mins[motor] == maxes[motor]]
