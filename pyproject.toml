@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lerobot_robot_grpc"
+version = "0.1.0"
+description = "gRPC follower/leader devices for lerobot — decoupled from the lerobot source tree."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Yiming Yang" }]
+dependencies = [
+    # lerobot base (ships opencv-python-headless) + the gRPC stack it already pins.
+    "lerobot[grpcio-dep]>=0.6.1,<0.7",
+]
+
+[project.optional-dependencies]
+# Needed only on the robot-side machine that wraps real SO101 hardware.
+server = ["lerobot[feetech]>=0.6.1,<0.7"]
+
+[tool.setuptools.packages.find]
+include = ["lerobot_robot_grpc*"]

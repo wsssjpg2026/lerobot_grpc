@@ -1,0 +1,112 @@
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+
+enum DataType {
+    FLOAT32 = 0;
+    UINT8 = 1;
+    UINT16 = 2;
+    INT32 = 3;
+}
+
+enum Criticality {
+    CRITICAL = 0;   
+    AUXILIARY = 1;
+}
+
+enum WatchDogLevel {
+    A = 0;  // SDK已具备
+    B = 1;  // SDK不具备但开放了急停接口
+    C = 2;  // 无相关接口
+}
+
+enum Encoding {
+    RAW = 0;
+    JPEG = 1;
+    PNG = 2;
+}
+
+enum CalibrationStatus {
+    CALIBRATED = 0;
+    NEED_TO_CALIBRATE = 1;
+    CALIBRATING = 2;
+}
+
+enum DeviceStatus {
+    FATAL = 0;
+    IDLE = 1;
+    COLLECTION = 2;
+    CONTROL = 3;
+}
+
+message ImageShape {
+    // Dimensions (H, W, C) of an image or multi-dimensional feature.
+    // A scalar feature is declared as (1, 1, 1). Images are transmitted/decoded in HWC layout.
+    int32 H = 1;
+    int32 W = 2;
+    int32 C = 3;
+}
+
+message OneFeatureInfo {
+    string key = 1;
+    Criticality criticality = 2;
+    WatchDogLevel watchdog = 3;
+    // Scalar and RAW array payloads use little-endian encoding (see OneFeature.data).
+    DataType type = 4;
+    ImageShape shape = 5;
+    // RAW: raw bytes in the declared DataType (HWC layout for arrays).
+    // JPEG/PNG: compressed bytes, decoded by the client to RGB uint8 (HWC).
+    Encoding encoding = 6;
+    int32 img_quality = 7;
+}
+
+message OneFeature {
+    string key = 1;
+    // RAW payloads: little-endian scalar bytes, or a raw HWC array in the declared DataType.
+    // JPEG/PNG payloads: compressed image bytes.
+    bytes data = 2;
+}
+
+message CalibrationInfo {
+    CalibrationStatus status = 1;
+}
+
+message DeviceInfo {
+    DeviceStatus status = 1;
+}
+
+service Robot {
+    rpc GetObservationFeatureInfo(google.protobuf.Empty) returns (stream OneFeatureInfo);
+    rpc GetActionFeatureInfo(google.protobuf.Empty) returns (stream OneFeatureInfo);
+    rpc GetFeedbackFeatureInfo(google.protobuf.Empty) returns (stream OneFeatureInfo);
+
+    rpc Connect(google.protobuf.Empty) returns (CalibrationInfo);
+    rpc Calibrate(google.protobuf.Empty) returns (CalibrationInfo);
+    rpc CalibrateDone(google.protobuf.Empty) returns (google.protobuf.Empty);
+    rpc Disconnect(google.protobuf.Empty) returns (google.protobuf.Empty);
+
+    rpc GetObservation(google.protobuf.Empty) returns (stream OneFeature);
+    rpc SendAction(stream OneFeature) returns (google.protobuf.Empty);
+    rpc GetFeedback(google.protobuf.Empty) returns (stream OneFeature);
+
+    rpc GetStatus(google.protobuf.Empty) returns (DeviceInfo);
+}
+
+service Teleoperator {
+    rpc GetObservationFeatureInfo(google.protobuf.Empty) returns (stream OneFeatureInfo);
+    rpc GetActionFeatureInfo(google.protobuf.Empty) returns (stream OneFeatureInfo);
+    rpc GetFeedbackFeatureInfo(google.protobuf.Empty) returns (stream OneFeatureInfo);
+
+    rpc Connect(google.protobuf.Empty) returns (CalibrationInfo);
+    rpc Calibrate(google.protobuf.Empty) returns (CalibrationInfo);
+    rpc CalibrateDone(google.protobuf.Empty) returns (google.protobuf.Empty);
+    rpc Disconnect(google.protobuf.Empty) returns (google.protobuf.Empty);
+
+    rpc GetObservation(google.protobuf.Empty) returns (stream OneFeature);
+    rpc GetAction(google.protobuf.Empty) returns (stream OneFeature);
+    rpc SendFeedback(stream OneFeature) returns (google.protobuf.Empty);
+
+    rpc GetStatus(google.protobuf.Empty) returns (DeviceInfo);
+
+    rpc SetReference(google.protobuf.Empty) returns (google.protobuf.Empty);
+}
