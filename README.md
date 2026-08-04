@@ -35,6 +35,15 @@ lerobot-record \
     ...
 ```
 
+## Extending — adding new hardware
+
+The client (`grpc_follower` / `grpc_leader`) is hardware-agnostic; the feature schema
+is negotiated with the server at runtime. So supporting a new robot or input device
+means writing **one new server file**, not touching the client or the proto.
+
+See **[docs/extending.md](docs/extending.md)** for the full guide, including a worked
+Quest 3 → Unitree G1 example (hand-pose retargeting, dual-arm, companion-PC leader).
+
 ## Why the package isn't named `lerobot_grpc`
 
 lerobot discovers third-party plugins by scanning installed distributions whose name starts with one of `lerobot_robot_` / `lerobot_teleoperator_` / `lerobot_camera_` / `lerobot_policy_` / `lerobot_env_`, then doing `importlib.import_module(dist_name)`. There is no neutral prefix, so a distribution named `lerobot_grpc` would **not** be auto-imported and would require `--robot.discover_packages_path=lerobot_grpc` on every invocation. Naming the dist `lerobot_robot_grpc` buys zero-flag UX; the import name is internal plumbing that end users never type (the git URL, the `lerobot-record` CLI, and the device `--type` values are all they see). A single import registers both the follower and the leader because registration is a side-effect of import, keyed only on the package being imported — not on which kind it registers.
