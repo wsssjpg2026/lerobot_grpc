@@ -65,6 +65,11 @@ class RobotStub:
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
                 response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
                 _registered_method=True)
+        self.StreamCalibration = channel.unary_stream(
+                '/Robot/StreamCalibration',
+                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+                response_deserializer=device__pb2.CalibrationFrame.FromString,
+                _registered_method=True)
         self.Disconnect = channel.unary_unary(
                 '/Robot/Disconnect',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
@@ -126,6 +131,12 @@ class RobotServicer:
         raise NotImplementedError('Method not implemented!')
 
     def CalibrateDone(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StreamCalibration(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -193,6 +204,11 @@ def add_RobotServicer_to_server(servicer, server):
                     servicer.CalibrateDone,
                     request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
                     response_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            ),
+            'StreamCalibration': grpc.unary_stream_rpc_method_handler(
+                    servicer.StreamCalibration,
+                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                    response_serializer=device__pb2.CalibrationFrame.SerializeToString,
             ),
             'Disconnect': grpc.unary_unary_rpc_method_handler(
                     servicer.Disconnect,
@@ -393,6 +409,33 @@ class Robot:
             _registered_method=True)
 
     @staticmethod
+    def StreamCalibration(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/Robot/StreamCalibration',
+            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            device__pb2.CalibrationFrame.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def Disconnect(request,
             target,
             options=(),
@@ -567,6 +610,11 @@ class TeleoperatorStub:
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
                 response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
                 _registered_method=True)
+        self.StreamCalibration = channel.unary_stream(
+                '/Teleoperator/StreamCalibration',
+                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+                response_deserializer=device__pb2.CalibrationFrame.FromString,
+                _registered_method=True)
         self.Disconnect = channel.unary_unary(
                 '/Teleoperator/Disconnect',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
@@ -633,6 +681,12 @@ class TeleoperatorServicer:
         raise NotImplementedError('Method not implemented!')
 
     def CalibrateDone(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StreamCalibration(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -706,6 +760,11 @@ def add_TeleoperatorServicer_to_server(servicer, server):
                     servicer.CalibrateDone,
                     request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
                     response_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            ),
+            'StreamCalibration': grpc.unary_stream_rpc_method_handler(
+                    servicer.StreamCalibration,
+                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                    response_serializer=device__pb2.CalibrationFrame.SerializeToString,
             ),
             'Disconnect': grpc.unary_unary_rpc_method_handler(
                     servicer.Disconnect,
@@ -900,6 +959,33 @@ class Teleoperator:
             '/Teleoperator/CalibrateDone',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StreamCalibration(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/Teleoperator/StreamCalibration',
+            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            device__pb2.CalibrationFrame.FromString,
             options,
             channel_credentials,
             insecure,

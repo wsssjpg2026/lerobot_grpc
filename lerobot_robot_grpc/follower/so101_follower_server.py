@@ -1,4 +1,5 @@
 import logging
+import queue
 import time
 import threading
 import traceback
@@ -22,7 +23,6 @@ from lerobot.motors import MotorCalibration
 from lerobot.lerobot_types import RobotAction
 from lerobot_robot_grpc.protos import device_pb2
 from lerobot.utils.errors import DeviceNotConnectedError
-from lerobot.utils.utils import move_cursor_up
 
 logger = logging.getLogger(__name__)
 
@@ -68,11 +68,17 @@ class SO101FollowerAdapted(SO101Follower):
             positions = bus.sync_read("Present_Position", motor_names, normalize=False, num_retry=5)
             mins = {motor: min(positions[motor], min_) for motor, min_ in mins.items()}
             maxes = {motor: max(positions[motor], max_) for motor, max_ in maxes.items()}
-            print("\n-------------------------------------------")
-            print(f"{'NAME':<15} | {'MIN':>6} | {'POS':>6} | {'MAX':>6}")
-            for motor in motor_names:
-                print(f"{motor:<15} | {mins[motor]:>6} | {positions[motor]:>6} | {maxes[motor]:>6}")
-            move_cursor_up(len(motor_names) + 3)
+            q = getattr(self, "_calib_frame_queue", None)
+            if q is not None:
+                frame = device_pb2.CalibrationFrame()
+                for motor in motor_names:
+                    frame.readings.add(
+                        name=motor,
+                        position=int(positions[motor]),
+                        range_min=int(mins[motor]),
+                        range_max=int(maxes[motor]),
+                    )
+                q.put(frame)
             time.sleep(0.02)
 
         same_min_max = [motor for motor in motor_names if mins[motor] == maxes[motor]]
@@ -122,6 +128,7 @@ class SO101FollowerServicer(FollowerServicer):
         self._calibration_state_lock = threading.Lock()
         self._calibrating = False
         self._calibrate_error: str | None = None
+        self._calib_frame_queue: queue.Queue | None = None
 
     @staticmethod
     def _encode_feature_info(feature_info: dict[str, Any]) -> dict[str, device_pb2.OneFeatureInfo]:
@@ -182,6 +189,8 @@ class SO101FollowerServicer(FollowerServicer):
         finally:
             with self._calibration_state_lock:
                 self._calibrating = False
+            if self._calib_frame_queue is not None:
+                self._calib_frame_queue.put(None)
 
     def Calibrate(self, request, context):
         if not self.robot.is_connected:
@@ -197,6 +206,8 @@ class SO101FollowerServicer(FollowerServicer):
             # Clear *before* starting the thread so a CalibrateDone arriving at any point during
             # calibration is never lost (it would otherwise hang the recording loop forever).
             self.robot._calibrate_done.clear()
+            self._calib_frame_queue = queue.Queue()
+            self.robot._calib_frame_queue = self._calib_frame_queue
 
         calibrate_thread = threading.Thread(target=self._calibrate_in_thread, daemon=True)
         calibrate_thread.start()
@@ -205,6 +216,19 @@ class SO101FollowerServicer(FollowerServicer):
     def CalibrateDone(self, request, context):
         self.robot._calibrate_done.set()
         return Empty()
+
+    def StreamCalibration(self, request, context):
+        q = self._calib_frame_queue
+        if q is None:
+            return
+        while context.is_active():
+            try:
+                frame = q.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            if frame is None:
+                break
+            yield frame
 
     def Disconnect(self, request, context):
         if self.robot.is_connected:

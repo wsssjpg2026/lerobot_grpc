@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -10,6 +11,7 @@ from lerobot.lerobot_types import RobotAction, RobotObservation
 from lerobot.utils.decorators import check_if_already_connected, check_if_not_connected
 from lerobot.utils.errors import DeviceNotConnectedError
 from lerobot.utils.import_utils import _grpc_available, require_package
+from lerobot.utils.utils import enter_pressed, move_cursor_up
 
 from lerobot.teleoperators.teleoperator import Teleoperator
 from .config_grpc import GRPCLeaderConfig
@@ -217,10 +219,37 @@ class GRPCLeader(Teleoperator):
 
     def _calibrate_once(self, only_one_attempt: bool = False) -> None:
         logger.warning(f"GRPCLeader at {self.address} needs calibration.")
-        print("Starting calibration process...")
-        input("Press Enter to finish calibration...")
+        print("Starting calibration process... (move joints through full range, then press Enter)")
+
+        latest: dict[str, Any] = {"frame": None}
+        stop = threading.Event()
+
+        def _recv_frames():
+            try:
+                for frame in self.stub.StreamCalibration(Empty(), timeout=self.connect_timeout_s):
+                    latest["frame"] = frame
+                    if stop.is_set():
+                        break
+            except grpc.RpcError:
+                pass
+
+        recv_thread = threading.Thread(target=_recv_frames, daemon=True)
+        recv_thread.start()
+
+        n = 0
+        while not enter_pressed():
+            frame = latest["frame"]
+            if frame is not None and len(frame.readings) > 0:
+                n = len(frame.readings)
+                print("\n-------------------------------------------")
+                print(f"{'NAME':<15} | {'MIN':>6} | {'POS':>6} | {'MAX':>6}")
+                for r in frame.readings:
+                    print(f"{r.name:<15} | {r.range_min:>6} | {r.position:>6} | {r.range_max:>6}")
+                move_cursor_up(n + 3)
+            time.sleep(0.05)
+        stop.set()
+
         self.stub.CalibrateDone(Empty(), timeout=self.connect_timeout_s)
-        # Confirm the server actually finished and saved the calibration; do not assume success.
         self._wait_for_calibration(only_once=only_one_attempt)
 
     def calibrate(self) -> None:

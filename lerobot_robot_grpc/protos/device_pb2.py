@@ -25,25 +25,25 @@ _sym_db = _symbol_database.Default()
 from google.protobuf import empty_pb2 as google_dot_protobuf_dot_empty__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0c\x64\x65vice.proto\x1a\x1bgoogle/protobuf/empty.proto\"-\n\nImageShape\x12\t\n\x01H\x18\x01 \x01(\x05\x12\t\n\x01W\x18\x02 \x01(\x05\x12\t\n\x01\x43\x18\x03 \x01(\x05\"\xc9\x01\n\x0eOneFeatureInfo\x12\x0b\n\x03key\x18\x01 \x01(\t\x12!\n\x0b\x63riticality\x18\x02 \x01(\x0e\x32\x0c.Criticality\x12 \n\x08watchdog\x18\x03 \x01(\x0e\x32\x0e.WatchDogLevel\x12\x17\n\x04type\x18\x04 \x01(\x0e\x32\t.DataType\x12\x1a\n\x05shape\x18\x05 \x01(\x0b\x32\x0b.ImageShape\x12\x1b\n\x08\x65ncoding\x18\x06 \x01(\x0e\x32\t.Encoding\x12\x13\n\x0bimg_quality\x18\x07 \x01(\x05\"\'\n\nOneFeature\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\x0c\n\x04\x64\x61ta\x18\x02 \x01(\x0c\"5\n\x0f\x43\x61librationInfo\x12\"\n\x06status\x18\x01 \x01(\x0e\x32\x12.CalibrationStatus\"+\n\nDeviceInfo\x12\x1d\n\x06status\x18\x01 \x01(\x0e\x32\r.DeviceStatus*9\n\x08\x44\x61taType\x12\x0b\n\x07\x46LOAT32\x10\x00\x12\t\n\x05UINT8\x10\x01\x12\n\n\x06UINT16\x10\x02\x12\t\n\x05INT32\x10\x03**\n\x0b\x43riticality\x12\x0c\n\x08\x43RITICAL\x10\x00\x12\r\n\tAUXILIARY\x10\x01*$\n\rWatchDogLevel\x12\x05\n\x01\x41\x10\x00\x12\x05\n\x01\x42\x10\x01\x12\x05\n\x01\x43\x10\x02*&\n\x08\x45ncoding\x12\x07\n\x03RAW\x10\x00\x12\x08\n\x04JPEG\x10\x01\x12\x07\n\x03PNG\x10\x02*K\n\x11\x43\x61librationStatus\x12\x0e\n\nCALIBRATED\x10\x00\x12\x15\n\x11NEED_TO_CALIBRATE\x10\x01\x12\x0f\n\x0b\x43\x41LIBRATING\x10\x02*@\n\x0c\x44\x65viceStatus\x12\t\n\x05\x46\x41TAL\x10\x00\x12\x08\n\x04IDLE\x10\x01\x12\x0e\n\nCOLLECTION\x10\x02\x12\x0b\n\x07\x43ONTROL\x10\x03\x32\x98\x05\n\x05Robot\x12\x46\n\x19GetObservationFeatureInfo\x12\x16.google.protobuf.Empty\x1a\x0f.OneFeatureInfo0\x01\x12\x41\n\x14GetActionFeatureInfo\x12\x16.google.protobuf.Empty\x1a\x0f.OneFeatureInfo0\x01\x12\x43\n\x16GetFeedbackFeatureInfo\x12\x16.google.protobuf.Empty\x1a\x0f.OneFeatureInfo0\x01\x12\x33\n\x07\x43onnect\x12\x16.google.protobuf.Empty\x1a\x10.CalibrationInfo\x12\x35\n\tCalibrate\x12\x16.google.protobuf.Empty\x1a\x10.CalibrationInfo\x12?\n\rCalibrateDone\x12\x16.google.protobuf.Empty\x1a\x16.google.protobuf.Empty\x12<\n\nDisconnect\x12\x16.google.protobuf.Empty\x1a\x16.google.protobuf.Empty\x12\x37\n\x0eGetObservation\x12\x16.google.protobuf.Empty\x1a\x0b.OneFeature0\x01\x12\x33\n\nSendAction\x12\x0b.OneFeature\x1a\x16.google.protobuf.Empty(\x01\x12\x34\n\x0bGetFeedback\x12\x16.google.protobuf.Empty\x1a\x0b.OneFeature0\x01\x12\x30\n\tGetStatus\x12\x16.google.protobuf.Empty\x1a\x0b.DeviceInfo2\xdf\x05\n\x0cTeleoperator\x12\x46\n\x19GetObservationFeatureInfo\x12\x16.google.protobuf.Empty\x1a\x0f.OneFeatureInfo0\x01\x12\x41\n\x14GetActionFeatureInfo\x12\x16.google.protobuf.Empty\x1a\x0f.OneFeatureInfo0\x01\x12\x43\n\x16GetFeedbackFeatureInfo\x12\x16.google.protobuf.Empty\x1a\x0f.OneFeatureInfo0\x01\x12\x33\n\x07\x43onnect\x12\x16.google.protobuf.Empty\x1a\x10.CalibrationInfo\x12\x35\n\tCalibrate\x12\x16.google.protobuf.Empty\x1a\x10.CalibrationInfo\x12?\n\rCalibrateDone\x12\x16.google.protobuf.Empty\x1a\x16.google.protobuf.Empty\x12<\n\nDisconnect\x12\x16.google.protobuf.Empty\x1a\x16.google.protobuf.Empty\x12\x37\n\x0eGetObservation\x12\x16.google.protobuf.Empty\x1a\x0b.OneFeature0\x01\x12\x32\n\tGetAction\x12\x16.google.protobuf.Empty\x1a\x0b.OneFeature0\x01\x12\x35\n\x0cSendFeedback\x12\x0b.OneFeature\x1a\x16.google.protobuf.Empty(\x01\x12\x30\n\tGetStatus\x12\x16.google.protobuf.Empty\x1a\x0b.DeviceInfo\x12>\n\x0cSetReference\x12\x16.google.protobuf.Empty\x1a\x16.google.protobuf.Emptyb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0c\x64\x65vice.proto\x1a\x1bgoogle/protobuf/empty.proto\"-\n\nImageShape\x12\t\n\x01H\x18\x01 \x01(\x05\x12\t\n\x01W\x18\x02 \x01(\x05\x12\t\n\x01\x43\x18\x03 \x01(\x05\"\xc9\x01\n\x0eOneFeatureInfo\x12\x0b\n\x03key\x18\x01 \x01(\t\x12!\n\x0b\x63riticality\x18\x02 \x01(\x0e\x32\x0c.Criticality\x12 \n\x08watchdog\x18\x03 \x01(\x0e\x32\x0e.WatchDogLevel\x12\x17\n\x04type\x18\x04 \x01(\x0e\x32\t.DataType\x12\x1a\n\x05shape\x18\x05 \x01(\x0b\x32\x0b.ImageShape\x12\x1b\n\x08\x65ncoding\x18\x06 \x01(\x0e\x32\t.Encoding\x12\x13\n\x0bimg_quality\x18\x07 \x01(\x05\"\'\n\nOneFeature\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\x0c\n\x04\x64\x61ta\x18\x02 \x01(\x0c\"5\n\x0f\x43\x61librationInfo\x12\"\n\x06status\x18\x01 \x01(\x0e\x32\x12.CalibrationStatus\"\x9a\x01\n\x10\x43\x61librationFrame\x12\x30\n\x08readings\x18\x01 \x03(\x0b\x32\x1e.CalibrationFrame.MotorReading\x1aT\n\x0cMotorReading\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x10\n\x08position\x18\x02 \x01(\x05\x12\x11\n\trange_min\x18\x03 \x01(\x05\x12\x11\n\trange_max\x18\x04 \x01(\x05\"+\n\nDeviceInfo\x12\x1d\n\x06status\x18\x01 \x01(\x0e\x32\r.DeviceStatus*9\n\x08\x44\x61taType\x12\x0b\n\x07\x46LOAT32\x10\x00\x12\t\n\x05UINT8\x10\x01\x12\n\n\x06UINT16\x10\x02\x12\t\n\x05INT32\x10\x03**\n\x0b\x43riticality\x12\x0c\n\x08\x43RITICAL\x10\x00\x12\r\n\tAUXILIARY\x10\x01*$\n\rWatchDogLevel\x12\x05\n\x01\x41\x10\x00\x12\x05\n\x01\x42\x10\x01\x12\x05\n\x01\x43\x10\x02*&\n\x08\x45ncoding\x12\x07\n\x03RAW\x10\x00\x12\x08\n\x04JPEG\x10\x01\x12\x07\n\x03PNG\x10\x02*K\n\x11\x43\x61librationStatus\x12\x0e\n\nCALIBRATED\x10\x00\x12\x15\n\x11NEED_TO_CALIBRATE\x10\x01\x12\x0f\n\x0b\x43\x41LIBRATING\x10\x02*@\n\x0c\x44\x65viceStatus\x12\t\n\x05\x46\x41TAL\x10\x00\x12\x08\n\x04IDLE\x10\x01\x12\x0e\n\nCOLLECTION\x10\x02\x12\x0b\n\x07\x43ONTROL\x10\x03\x32\xda\x05\n\x05Robot\x12\x46\n\x19GetObservationFeatureInfo\x12\x16.google.protobuf.Empty\x1a\x0f.OneFeatureInfo0\x01\x12\x41\n\x14GetActionFeatureInfo\x12\x16.google.protobuf.Empty\x1a\x0f.OneFeatureInfo0\x01\x12\x43\n\x16GetFeedbackFeatureInfo\x12\x16.google.protobuf.Empty\x1a\x0f.OneFeatureInfo0\x01\x12\x33\n\x07\x43onnect\x12\x16.google.protobuf.Empty\x1a\x10.CalibrationInfo\x12\x35\n\tCalibrate\x12\x16.google.protobuf.Empty\x1a\x10.CalibrationInfo\x12?\n\rCalibrateDone\x12\x16.google.protobuf.Empty\x1a\x16.google.protobuf.Empty\x12@\n\x11StreamCalibration\x12\x16.google.protobuf.Empty\x1a\x11.CalibrationFrame0\x01\x12<\n\nDisconnect\x12\x16.google.protobuf.Empty\x1a\x16.google.protobuf.Empty\x12\x37\n\x0eGetObservation\x12\x16.google.protobuf.Empty\x1a\x0b.OneFeature0\x01\x12\x33\n\nSendAction\x12\x0b.OneFeature\x1a\x16.google.protobuf.Empty(\x01\x12\x34\n\x0bGetFeedback\x12\x16.google.protobuf.Empty\x1a\x0b.OneFeature0\x01\x12\x30\n\tGetStatus\x12\x16.google.protobuf.Empty\x1a\x0b.DeviceInfo2\xa1\x06\n\x0cTeleoperator\x12\x46\n\x19GetObservationFeatureInfo\x12\x16.google.protobuf.Empty\x1a\x0f.OneFeatureInfo0\x01\x12\x41\n\x14GetActionFeatureInfo\x12\x16.google.protobuf.Empty\x1a\x0f.OneFeatureInfo0\x01\x12\x43\n\x16GetFeedbackFeatureInfo\x12\x16.google.protobuf.Empty\x1a\x0f.OneFeatureInfo0\x01\x12\x33\n\x07\x43onnect\x12\x16.google.protobuf.Empty\x1a\x10.CalibrationInfo\x12\x35\n\tCalibrate\x12\x16.google.protobuf.Empty\x1a\x10.CalibrationInfo\x12?\n\rCalibrateDone\x12\x16.google.protobuf.Empty\x1a\x16.google.protobuf.Empty\x12@\n\x11StreamCalibration\x12\x16.google.protobuf.Empty\x1a\x11.CalibrationFrame0\x01\x12<\n\nDisconnect\x12\x16.google.protobuf.Empty\x1a\x16.google.protobuf.Empty\x12\x37\n\x0eGetObservation\x12\x16.google.protobuf.Empty\x1a\x0b.OneFeature0\x01\x12\x32\n\tGetAction\x12\x16.google.protobuf.Empty\x1a\x0b.OneFeature0\x01\x12\x35\n\x0cSendFeedback\x12\x0b.OneFeature\x1a\x16.google.protobuf.Empty(\x01\x12\x30\n\tGetStatus\x12\x16.google.protobuf.Empty\x1a\x0b.DeviceInfo\x12>\n\x0cSetReference\x12\x16.google.protobuf.Empty\x1a\x16.google.protobuf.Emptyb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'device_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_DATATYPE']._serialized_start=437
-  _globals['_DATATYPE']._serialized_end=494
-  _globals['_CRITICALITY']._serialized_start=496
-  _globals['_CRITICALITY']._serialized_end=538
-  _globals['_WATCHDOGLEVEL']._serialized_start=540
-  _globals['_WATCHDOGLEVEL']._serialized_end=576
-  _globals['_ENCODING']._serialized_start=578
-  _globals['_ENCODING']._serialized_end=616
-  _globals['_CALIBRATIONSTATUS']._serialized_start=618
-  _globals['_CALIBRATIONSTATUS']._serialized_end=693
-  _globals['_DEVICESTATUS']._serialized_start=695
-  _globals['_DEVICESTATUS']._serialized_end=759
+  _globals['_DATATYPE']._serialized_start=594
+  _globals['_DATATYPE']._serialized_end=651
+  _globals['_CRITICALITY']._serialized_start=653
+  _globals['_CRITICALITY']._serialized_end=695
+  _globals['_WATCHDOGLEVEL']._serialized_start=697
+  _globals['_WATCHDOGLEVEL']._serialized_end=733
+  _globals['_ENCODING']._serialized_start=735
+  _globals['_ENCODING']._serialized_end=773
+  _globals['_CALIBRATIONSTATUS']._serialized_start=775
+  _globals['_CALIBRATIONSTATUS']._serialized_end=850
+  _globals['_DEVICESTATUS']._serialized_start=852
+  _globals['_DEVICESTATUS']._serialized_end=916
   _globals['_IMAGESHAPE']._serialized_start=45
   _globals['_IMAGESHAPE']._serialized_end=90
   _globals['_ONEFEATUREINFO']._serialized_start=93
@@ -52,10 +52,14 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_ONEFEATURE']._serialized_end=335
   _globals['_CALIBRATIONINFO']._serialized_start=337
   _globals['_CALIBRATIONINFO']._serialized_end=390
-  _globals['_DEVICEINFO']._serialized_start=392
-  _globals['_DEVICEINFO']._serialized_end=435
-  _globals['_ROBOT']._serialized_start=762
-  _globals['_ROBOT']._serialized_end=1426
-  _globals['_TELEOPERATOR']._serialized_start=1429
-  _globals['_TELEOPERATOR']._serialized_end=2164
+  _globals['_CALIBRATIONFRAME']._serialized_start=393
+  _globals['_CALIBRATIONFRAME']._serialized_end=547
+  _globals['_CALIBRATIONFRAME_MOTORREADING']._serialized_start=463
+  _globals['_CALIBRATIONFRAME_MOTORREADING']._serialized_end=547
+  _globals['_DEVICEINFO']._serialized_start=549
+  _globals['_DEVICEINFO']._serialized_end=592
+  _globals['_ROBOT']._serialized_start=919
+  _globals['_ROBOT']._serialized_end=1649
+  _globals['_TELEOPERATOR']._serialized_start=1652
+  _globals['_TELEOPERATOR']._serialized_end=2453
 # @@protoc_insertion_point(module_scope)

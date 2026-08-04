@@ -71,6 +71,16 @@ message CalibrationInfo {
     CalibrationStatus status = 1;
 }
 
+message CalibrationFrame {
+    message MotorReading {
+        string name = 1;
+        int32 position = 2;
+        int32 range_min = 3;
+        int32 range_max = 4;
+    }
+    repeated MotorReading readings = 1;
+}
+
 message DeviceInfo {
     DeviceStatus status = 1;
 }
@@ -83,6 +93,7 @@ service Robot {
     rpc Connect(google.protobuf.Empty) returns (CalibrationInfo);
     rpc Calibrate(google.protobuf.Empty) returns (CalibrationInfo);
     rpc CalibrateDone(google.protobuf.Empty) returns (google.protobuf.Empty);
+    rpc StreamCalibration(google.protobuf.Empty) returns (stream CalibrationFrame);
     rpc Disconnect(google.protobuf.Empty) returns (google.protobuf.Empty);
 
     rpc GetObservation(google.protobuf.Empty) returns (stream OneFeature);
@@ -100,6 +111,7 @@ service Teleoperator {
     rpc Connect(google.protobuf.Empty) returns (CalibrationInfo);
     rpc Calibrate(google.protobuf.Empty) returns (CalibrationInfo);
     rpc CalibrateDone(google.protobuf.Empty) returns (google.protobuf.Empty);
+    rpc StreamCalibration(google.protobuf.Empty) returns (stream CalibrationFrame);
     rpc Disconnect(google.protobuf.Empty) returns (google.protobuf.Empty);
 
     rpc GetObservation(google.protobuf.Empty) returns (stream OneFeature);
