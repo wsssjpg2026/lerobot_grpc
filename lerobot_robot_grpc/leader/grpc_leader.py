@@ -226,7 +226,7 @@ class GRPCLeader(Teleoperator):
 
         def _recv_frames():
             try:
-                for frame in self.stub.StreamCalibration(Empty(), timeout=self.connect_timeout_s):
+                for frame in self.stub.StreamCalibration(Empty()):
                     latest["frame"] = frame
                     if stop.is_set():
                         break
