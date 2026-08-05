@@ -31,18 +31,8 @@ class LeaderServicer(device_pb2_grpc.TeleoperatorServicer, ABC):
     """Abstract base class for the Leader gRPC service."""
 
     @abstractmethod
-    def GetObservationFeatureInfo(self, request, context):
-        """Gets the feature information for observations."""
-        pass
-
-    @abstractmethod
-    def GetActionFeatureInfo(self, request, context):
-        """Gets the feature information for actions."""
-        pass
-
-    @abstractmethod
-    def GetFeedbackFeatureInfo(self, request, context):
-        """Gets the feature information for feedback."""
+    def GetInfo(self, request, context):
+        """Gets all feature schemas (observation + action + feedback) in one call."""
         pass
 
     @abstractmethod

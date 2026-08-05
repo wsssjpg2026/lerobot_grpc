@@ -13,10 +13,18 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import cv2
 import numpy as np
+from google.protobuf.timestamp_pb2 import Timestamp
 
 from lerobot.lerobot_types import RobotAction, RobotObservation
 from lerobot.utils.errors import DeviceNotConnectedError
 from lerobot.utils.import_utils import _grpc_available
+
+
+def _now_produce_ts() -> Timestamp:
+    """UTC timestamp marking when a frame was produced/sent — for latency observability."""
+    ts = Timestamp()
+    ts.GetCurrentTime()
+    return ts
 
 if TYPE_CHECKING or _grpc_available:
     from lerobot_robot_grpc.protos import device_pb2
@@ -26,25 +34,33 @@ else:
 logger = logging.getLogger(__name__)
 
 
-# Keys are `device.proto` DataType enum values: FLOAT32=0, UINT8=1, UINT16=2, INT32=3.
-# Kept as plain ints so this module stays importable without the optional `grpcio` dependency.
-_FEATURE_META_BY_PROTO: dict[int, tuple[str, type[np.generic]]] = {
-    # Explicit little-endian (e.g. "<f") so that encoding is deterministic across platforms.
-    0: ("<f", np.float32),
-    3: ("<i", np.int32),
-    1: ("<B", np.uint8),
-    2: ("<H", np.uint16),
-}
+# DataType → (struct format char, numpy scalar type). Keyed by the symbolic enum value so
+# the mapping tracks enum renumbering automatically (enums now follow *_UNSPECIFIED=0).
+# Guarded so this module stays importable without the optional `grpcio` dependency.
+_FEATURE_META_BY_PROTO: dict[int, tuple[str, type[np.generic]]] = (
+    {
+        # Explicit little-endian (e.g. "<f") so that encoding is deterministic across platforms.
+        device_pb2.DataType.FLOAT32: ("<f", np.float32),
+        device_pb2.DataType.INT32: ("<i", np.int32),
+        device_pb2.DataType.UINT8: ("<B", np.uint8),
+        device_pb2.DataType.UINT16: ("<H", np.uint16),
+    }
+    if device_pb2 is not None
+    else {}
+)
 
-# Python scalar types are exposed in `feedback_features`/`action_features`: values parsed
-# by `parse_feature` are Python scalars (e.g. via `struct.unpack`), and LeRobot dataset
-# features expect Python types (see `hw_to_dataset_features`).
-_PYTHON_SCALAR_BY_PROTO: dict[int, type] = {
-    0: float,
-    3: int,
-    1: int,
-    2: int,
-}
+# DataType → Python scalar type returned by `parse_feature`. LeRobot dataset features expect
+# Python scalars (see `hw_to_dataset_features`).
+_PYTHON_SCALAR_BY_PROTO: dict[int, type] = (
+    {
+        device_pb2.DataType.FLOAT32: float,
+        device_pb2.DataType.INT32: int,
+        device_pb2.DataType.UINT8: int,
+        device_pb2.DataType.UINT16: int,
+    }
+    if device_pb2 is not None
+    else {}
+)
 
 
 def feature_meta_for(data_type: device_pb2.DataType) -> tuple[str, type[np.generic]]:
@@ -95,6 +111,7 @@ def encode_feature(
     ft_info: dict[str, device_pb2.OneFeatureInfo],
     source: RobotObservation | RobotAction | dict[str, Any],
 ) -> Iterator[device_pb2.OneFeature]:
+    ts = _now_produce_ts()
     for key in source.keys():
         if key not in ft_info:
             raise KeyError(f"Unknown action key {key}")
@@ -104,11 +121,12 @@ def encode_feature(
             if feature_info.encoding != device_pb2.Encoding.RAW:
                 raise ValueError(f"Encoding '{feature_info.encoding}' is not supported for scalar feature '{key}'.")
             fmt_char, _ = feature_meta_for(feature_info.type)
-            yield device_pb2.OneFeature(key=key, data=struct.pack(fmt_char, source[key]))
+            data = struct.pack(fmt_char, source[key])
         elif feature_info.encoding == device_pb2.Encoding.RAW:
-            yield device_pb2.OneFeature(key=key, data=source[key].tobytes())
+            data = source[key].tobytes()
         else:
-            yield device_pb2.OneFeature(key=key, data=encode_image(feature_info, source[key]))
+            data = encode_image(feature_info, source[key])
+        yield device_pb2.OneFeature(key=key, data=data, produce_ts=ts)
 
 
 def parse_feature(feature: device_pb2.OneFeature, ft_info: dict[str, device_pb2.OneFeatureInfo]) -> Any:

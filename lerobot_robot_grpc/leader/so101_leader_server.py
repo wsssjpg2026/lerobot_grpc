@@ -30,6 +30,10 @@ logger = logging.getLogger(__name__)
 type NameOrID = str | int
 type Value = int | float
 
+
+class CalibrationAbortedError(Exception):
+    """Raised when an in-progress calibration is aborted (e.g. new Connect arrived)."""
+
 _PROTO_BY_PYTHON: dict[type, device_pb2.DataType] = {
     int: device_pb2.DataType.INT32,
     float: device_pb2.DataType.FLOAT32,
@@ -53,6 +57,7 @@ class SO101LeaderAdapted(SO101Leader):
         # Cleared in the servicer's Calibrate handler *before* the calibration thread starts, so a
         # CalibrateDone arriving at any point afterwards is never lost (unlike a plain bool flag).
         self._calibrate_done = threading.Event()
+        self._calibrate_aborted = threading.Event()
 
         self.latest_action: RobotAction | None = None
         self.reference_action: RobotAction | None = None
@@ -67,6 +72,8 @@ class SO101LeaderAdapted(SO101Leader):
         maxes = start_positions.copy()
 
         while not self._calibrate_done.is_set():
+            if self._calibrate_aborted.is_set():
+                raise CalibrationAbortedError()
             positions = bus.sync_read("Present_Position", motor_names, normalize=False, num_retry=5)
             mins = {motor: min(positions[motor], min_) for motor, min_ in mins.items()}
             maxes = {motor: max(positions[motor], max_) for motor, max_ in maxes.items()}
@@ -83,14 +90,17 @@ class SO101LeaderAdapted(SO101Leader):
                 q.put(frame)
             time.sleep(0.02)
 
+        if self._calibrate_aborted.is_set():
+            raise CalibrationAbortedError()
+
         same_min_max = [motor for motor in motor_names if mins[motor] == maxes[motor]]
         if same_min_max:
             raise ValueError(f"Some motors have the same min and max values:\n{pformat(same_min_max)}")
 
         return mins, maxes
 
-    def calibrate(self) -> None:
-        if self.calibration:
+    def calibrate(self, force: bool = False) -> None:
+        if self.calibration and not force:
             self.bus.write_calibration(self.calibration)
             return
 
@@ -142,6 +152,8 @@ class SO101LeaderServicer(LeaderServicer):
         self._calibrating = False
         self._calibrate_error: str | None = None
         self._calib_frame_queue: queue.Queue | None = None
+        self._force_recalibrate = False
+        self._calibrate_thread: threading.Thread | None = None
 
     @staticmethod
     def _encode_feature_info(feature_info: dict[str, Any]) -> dict[str, device_pb2.OneFeatureInfo]:
@@ -175,27 +187,44 @@ class SO101LeaderServicer(LeaderServicer):
             )
         return result
 
-    def GetObservationFeatureInfo(self, request, context):
-        return iter(())
-
-    def GetActionFeatureInfo(self, request, context):
-        return iter(self._encode_feature_info(self.robot.action_features).values())
-
-    def GetFeedbackFeatureInfo(self, request, context):
-        return iter(self._encode_feature_info(self.robot.action_features).values())  # Assuming feedback features are the same as action features
+    def GetInfo(self, request, context):
+        # leader 无 observation features;action 与 feedback 同源(action_features)。
+        act = self._encode_feature_info(self.robot.action_features)
+        return device_pb2.GetInfoResponse(
+            observation_features=[],
+            action_features=act.values(),
+            feedback_features=act.values(),
+        )
 
     def Connect(self, request, context):
         if not self.robot.is_connected:
             self.robot.connect(False)
+        self._calibrate_error = None
+        self._abort_stuck_calibration()
         if self.robot.is_calibrated:
             return device_pb2.CalibrationInfo(status=device_pb2.CalibrationStatus.CALIBRATED)
         else:
             return device_pb2.CalibrationInfo(status=device_pb2.CalibrationStatus.NEED_TO_CALIBRATE)
 
+    def _abort_stuck_calibration(self) -> None:
+        """Abort any in-progress calibration thread (e.g. previous client died with Ctrl+C)."""
+        with self._calibration_state_lock:
+            if not self._calibrating:
+                return
+            self.robot._calibrate_aborted.set()
+            self.robot._calibrate_done.set()
+            thread = self._calibrate_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=5.0)
+        with self._calibration_state_lock:
+            self._calibrating = False
+
     def _calibrate_in_thread(self) -> None:
         try:
             with self._calibration_lock:
-                self.robot.calibrate()
+                self.robot.calibrate(force=self._force_recalibrate)
+        except CalibrationAbortedError:
+            logger.info("Calibration aborted (new session connected).")
         except Exception as e:
             self._calibrate_error = traceback.format_exc()
             logger.exception(f"Calibration failed: {e}")
@@ -208,7 +237,7 @@ class SO101LeaderServicer(LeaderServicer):
     def Calibrate(self, request, context):
         if not self.robot.is_connected:
             self.robot.connect(False)
-        if self.robot.is_calibrated:
+        if self.robot.is_calibrated and not request.force:
             return device_pb2.CalibrationInfo(status=device_pb2.CalibrationStatus.CALIBRATED)
 
         with self._calibration_state_lock:
@@ -216,14 +245,16 @@ class SO101LeaderServicer(LeaderServicer):
                 return device_pb2.CalibrationInfo(status=device_pb2.CalibrationStatus.CALIBRATING)
             self._calibrating = True
             self._calibrate_error = None
+            self._force_recalibrate = request.force
+            self.robot._calibrate_aborted.clear()
             # Clear *before* starting the thread so a CalibrateDone arriving at any point during
             # calibration is never lost (it would otherwise hang the recording loop forever).
             self.robot._calibrate_done.clear()
             self._calib_frame_queue = queue.Queue()
             self.robot._calib_frame_queue = self._calib_frame_queue
 
-        calibrate_thread = threading.Thread(target=self._calibrate_in_thread, daemon=True)
-        calibrate_thread.start()
+        self._calibrate_thread = threading.Thread(target=self._calibrate_in_thread, daemon=True)
+        self._calibrate_thread.start()
         return device_pb2.CalibrationInfo(status=device_pb2.CalibrationStatus.NEED_TO_CALIBRATE)
     
     def CalibrateDone(self, request, context):
@@ -244,6 +275,7 @@ class SO101LeaderServicer(LeaderServicer):
             yield frame
 
     def Disconnect(self, request, context):
+        self._abort_stuck_calibration()
         if self.robot.is_connected:
             self.robot.disconnect()
         return Empty()

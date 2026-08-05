@@ -31,18 +31,8 @@ class FollowerServicer(device_pb2_grpc.RobotServicer, ABC):
     """Abstract base class for the Follower gRPC service."""
 
     @abstractmethod
-    def GetObservationFeatureInfo(self, request, context):
-        """Gets the feature information for observations."""
-        pass
-
-    @abstractmethod
-    def GetActionFeatureInfo(self, request, context):
-        """Gets the feature information for actions."""
-        pass
-
-    @abstractmethod
-    def GetFeedbackFeatureInfo(self, request, context):
-        """Gets the feature information for feedback."""
+    def GetInfo(self, request, context):
+        """Gets all feature schemas (observation + action + feedback) in one call."""
         pass
 
     @abstractmethod
@@ -71,8 +61,8 @@ class FollowerServicer(device_pb2_grpc.RobotServicer, ABC):
         pass
 
     @abstractmethod
-    def SendAction(self, request_iterator, context):
-        """Sends an action to the robot."""
+    def SendAction(self, request, context):
+        """Sends an action to the robot (unary: request=Action, returns executed Action)."""
         pass
 
     @abstractmethod

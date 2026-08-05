@@ -16,8 +16,21 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Needed only on the robot-side machine that wraps real SO101 hardware.
-server = ["lerobot[feetech]>=0.6.1,<0.7"]
+# Client-side extras for recording + visualization (recording/training machine)
+client = [
+    "lerobot[dataset]>=0.6.1,<0.7",
+    "lerobot[hardware]>=0.6.1,<0.7",
+    "lerobot[viz]>=0.6.1,<0.7",
+]
+# Server-side: wraps real SO101 hardware
+server = [
+    "lerobot[feetech]>=0.6.1,<0.7",
+]
+# Everything (client + server on same machine, typical dev setup)
+all = [
+    "lerobot_robot_grpc[client]",
+    "lerobot_robot_grpc[server]",
+]
 
 [tool.setuptools.packages.find]
 include = ["lerobot_robot_grpc*"]

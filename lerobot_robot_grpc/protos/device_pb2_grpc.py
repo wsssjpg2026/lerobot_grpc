@@ -35,63 +35,53 @@ class RobotStub:
         Args:
             channel: A grpc.Channel.
         """
-        self.GetObservationFeatureInfo = channel.unary_stream(
-                '/Robot/GetObservationFeatureInfo',
-                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-                response_deserializer=device__pb2.OneFeatureInfo.FromString,
-                _registered_method=True)
-        self.GetActionFeatureInfo = channel.unary_stream(
-                '/Robot/GetActionFeatureInfo',
-                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-                response_deserializer=device__pb2.OneFeatureInfo.FromString,
-                _registered_method=True)
-        self.GetFeedbackFeatureInfo = channel.unary_stream(
-                '/Robot/GetFeedbackFeatureInfo',
-                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-                response_deserializer=device__pb2.OneFeatureInfo.FromString,
+        self.GetInfo = channel.unary_unary(
+                '/rdc.v1.Robot/GetInfo',
+                request_serializer=device__pb2.GetInfoRequest.SerializeToString,
+                response_deserializer=device__pb2.GetInfoResponse.FromString,
                 _registered_method=True)
         self.Connect = channel.unary_unary(
-                '/Robot/Connect',
+                '/rdc.v1.Robot/Connect',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
                 response_deserializer=device__pb2.CalibrationInfo.FromString,
                 _registered_method=True)
         self.Calibrate = channel.unary_unary(
-                '/Robot/Calibrate',
-                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+                '/rdc.v1.Robot/Calibrate',
+                request_serializer=device__pb2.CalibrateRequest.SerializeToString,
                 response_deserializer=device__pb2.CalibrationInfo.FromString,
                 _registered_method=True)
         self.CalibrateDone = channel.unary_unary(
-                '/Robot/CalibrateDone',
+                '/rdc.v1.Robot/CalibrateDone',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
                 response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
                 _registered_method=True)
         self.StreamCalibration = channel.unary_stream(
-                '/Robot/StreamCalibration',
+                '/rdc.v1.Robot/StreamCalibration',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
                 response_deserializer=device__pb2.CalibrationFrame.FromString,
                 _registered_method=True)
         self.Disconnect = channel.unary_unary(
-                '/Robot/Disconnect',
+                '/rdc.v1.Robot/Disconnect',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
                 response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
                 _registered_method=True)
         self.GetObservation = channel.unary_stream(
-                '/Robot/GetObservation',
+                '/rdc.v1.Robot/GetObservation',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
                 response_deserializer=device__pb2.OneFeature.FromString,
                 _registered_method=True)
-        self.SendAction = channel.stream_unary(
-                '/Robot/SendAction',
-                request_serializer=device__pb2.OneFeature.SerializeToString,
-                response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+        self.SendAction = channel.unary_unary(
+                '/rdc.v1.Robot/SendAction',
+                request_serializer=device__pb2.Action.SerializeToString,
+                response_deserializer=device__pb2.Action.FromString,
                 _registered_method=True)
         self.GetFeedback = channel.unary_stream(
-                '/Robot/GetFeedback',
+                '/rdc.v1.Robot/GetFeedback',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
                 response_deserializer=device__pb2.OneFeature.FromString,
                 _registered_method=True)
         self.GetStatus = channel.unary_unary(
-                '/Robot/GetStatus',
+                '/rdc.v1.Robot/GetStatus',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
                 response_deserializer=device__pb2.DeviceInfo.FromString,
                 _registered_method=True)
@@ -100,20 +90,9 @@ class RobotStub:
 class RobotServicer:
     """Missing associated documentation comment in .proto file."""
 
-    def GetObservationFeatureInfo(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def GetActionFeatureInfo(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def GetFeedbackFeatureInfo(self, request, context):
-        """Missing associated documentation comment in .proto file."""
+    def GetInfo(self, request, context):
+        """schema 一次性协商(替代三个 Get*FeatureInfo)
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -154,8 +133,9 @@ class RobotServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def SendAction(self, request_iterator, context):
-        """Missing associated documentation comment in .proto file."""
+    def SendAction(self, request, context):
+        """unary:请求=commanded,响应=executed(不再是 fire-and-forget 的 stream→Empty)。
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -175,20 +155,10 @@ class RobotServicer:
 
 def add_RobotServicer_to_server(servicer, server):
     rpc_method_handlers = {
-            'GetObservationFeatureInfo': grpc.unary_stream_rpc_method_handler(
-                    servicer.GetObservationFeatureInfo,
-                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
-                    response_serializer=device__pb2.OneFeatureInfo.SerializeToString,
-            ),
-            'GetActionFeatureInfo': grpc.unary_stream_rpc_method_handler(
-                    servicer.GetActionFeatureInfo,
-                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
-                    response_serializer=device__pb2.OneFeatureInfo.SerializeToString,
-            ),
-            'GetFeedbackFeatureInfo': grpc.unary_stream_rpc_method_handler(
-                    servicer.GetFeedbackFeatureInfo,
-                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
-                    response_serializer=device__pb2.OneFeatureInfo.SerializeToString,
+            'GetInfo': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetInfo,
+                    request_deserializer=device__pb2.GetInfoRequest.FromString,
+                    response_serializer=device__pb2.GetInfoResponse.SerializeToString,
             ),
             'Connect': grpc.unary_unary_rpc_method_handler(
                     servicer.Connect,
@@ -197,7 +167,7 @@ def add_RobotServicer_to_server(servicer, server):
             ),
             'Calibrate': grpc.unary_unary_rpc_method_handler(
                     servicer.Calibrate,
-                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                    request_deserializer=device__pb2.CalibrateRequest.FromString,
                     response_serializer=device__pb2.CalibrationInfo.SerializeToString,
             ),
             'CalibrateDone': grpc.unary_unary_rpc_method_handler(
@@ -220,10 +190,10 @@ def add_RobotServicer_to_server(servicer, server):
                     request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
                     response_serializer=device__pb2.OneFeature.SerializeToString,
             ),
-            'SendAction': grpc.stream_unary_rpc_method_handler(
+            'SendAction': grpc.unary_unary_rpc_method_handler(
                     servicer.SendAction,
-                    request_deserializer=device__pb2.OneFeature.FromString,
-                    response_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+                    request_deserializer=device__pb2.Action.FromString,
+                    response_serializer=device__pb2.Action.SerializeToString,
             ),
             'GetFeedback': grpc.unary_stream_rpc_method_handler(
                     servicer.GetFeedback,
@@ -237,9 +207,9 @@ def add_RobotServicer_to_server(servicer, server):
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-            'Robot', rpc_method_handlers)
+            'rdc.v1.Robot', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('Robot', rpc_method_handlers)
+    server.add_registered_method_handlers('rdc.v1.Robot', rpc_method_handlers)
 
 
  # This class is part of an EXPERIMENTAL API.
@@ -247,7 +217,7 @@ class Robot:
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod
-    def GetObservationFeatureInfo(request,
+    def GetInfo(request,
             target,
             options=(),
             channel_credentials=None,
@@ -257,66 +227,12 @@ class Robot:
             wait_for_ready=None,
             timeout=None,
             metadata=None):
-        return grpc.experimental.unary_stream(
+        return grpc.experimental.unary_unary(
             request,
             target,
-            '/Robot/GetObservationFeatureInfo',
-            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-            device__pb2.OneFeatureInfo.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def GetActionFeatureInfo(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_stream(
-            request,
-            target,
-            '/Robot/GetActionFeatureInfo',
-            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-            device__pb2.OneFeatureInfo.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def GetFeedbackFeatureInfo(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_stream(
-            request,
-            target,
-            '/Robot/GetFeedbackFeatureInfo',
-            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-            device__pb2.OneFeatureInfo.FromString,
+            '/rdc.v1.Robot/GetInfo',
+            device__pb2.GetInfoRequest.SerializeToString,
+            device__pb2.GetInfoResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -341,7 +257,7 @@ class Robot:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/Robot/Connect',
+            '/rdc.v1.Robot/Connect',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             device__pb2.CalibrationInfo.FromString,
             options,
@@ -368,8 +284,8 @@ class Robot:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/Robot/Calibrate',
-            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            '/rdc.v1.Robot/Calibrate',
+            device__pb2.CalibrateRequest.SerializeToString,
             device__pb2.CalibrationInfo.FromString,
             options,
             channel_credentials,
@@ -395,7 +311,7 @@ class Robot:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/Robot/CalibrateDone',
+            '/rdc.v1.Robot/CalibrateDone',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             google_dot_protobuf_dot_empty__pb2.Empty.FromString,
             options,
@@ -422,7 +338,7 @@ class Robot:
         return grpc.experimental.unary_stream(
             request,
             target,
-            '/Robot/StreamCalibration',
+            '/rdc.v1.Robot/StreamCalibration',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             device__pb2.CalibrationFrame.FromString,
             options,
@@ -449,7 +365,7 @@ class Robot:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/Robot/Disconnect',
+            '/rdc.v1.Robot/Disconnect',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             google_dot_protobuf_dot_empty__pb2.Empty.FromString,
             options,
@@ -476,7 +392,7 @@ class Robot:
         return grpc.experimental.unary_stream(
             request,
             target,
-            '/Robot/GetObservation',
+            '/rdc.v1.Robot/GetObservation',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             device__pb2.OneFeature.FromString,
             options,
@@ -490,7 +406,7 @@ class Robot:
             _registered_method=True)
 
     @staticmethod
-    def SendAction(request_iterator,
+    def SendAction(request,
             target,
             options=(),
             channel_credentials=None,
@@ -500,12 +416,12 @@ class Robot:
             wait_for_ready=None,
             timeout=None,
             metadata=None):
-        return grpc.experimental.stream_unary(
-            request_iterator,
+        return grpc.experimental.unary_unary(
+            request,
             target,
-            '/Robot/SendAction',
-            device__pb2.OneFeature.SerializeToString,
-            google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+            '/rdc.v1.Robot/SendAction',
+            device__pb2.Action.SerializeToString,
+            device__pb2.Action.FromString,
             options,
             channel_credentials,
             insecure,
@@ -530,7 +446,7 @@ class Robot:
         return grpc.experimental.unary_stream(
             request,
             target,
-            '/Robot/GetFeedback',
+            '/rdc.v1.Robot/GetFeedback',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             device__pb2.OneFeature.FromString,
             options,
@@ -557,7 +473,7 @@ class Robot:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/Robot/GetStatus',
+            '/rdc.v1.Robot/GetStatus',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             device__pb2.DeviceInfo.FromString,
             options,
@@ -580,68 +496,58 @@ class TeleoperatorStub:
         Args:
             channel: A grpc.Channel.
         """
-        self.GetObservationFeatureInfo = channel.unary_stream(
-                '/Teleoperator/GetObservationFeatureInfo',
-                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-                response_deserializer=device__pb2.OneFeatureInfo.FromString,
-                _registered_method=True)
-        self.GetActionFeatureInfo = channel.unary_stream(
-                '/Teleoperator/GetActionFeatureInfo',
-                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-                response_deserializer=device__pb2.OneFeatureInfo.FromString,
-                _registered_method=True)
-        self.GetFeedbackFeatureInfo = channel.unary_stream(
-                '/Teleoperator/GetFeedbackFeatureInfo',
-                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-                response_deserializer=device__pb2.OneFeatureInfo.FromString,
+        self.GetInfo = channel.unary_unary(
+                '/rdc.v1.Teleoperator/GetInfo',
+                request_serializer=device__pb2.GetInfoRequest.SerializeToString,
+                response_deserializer=device__pb2.GetInfoResponse.FromString,
                 _registered_method=True)
         self.Connect = channel.unary_unary(
-                '/Teleoperator/Connect',
+                '/rdc.v1.Teleoperator/Connect',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
                 response_deserializer=device__pb2.CalibrationInfo.FromString,
                 _registered_method=True)
         self.Calibrate = channel.unary_unary(
-                '/Teleoperator/Calibrate',
-                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+                '/rdc.v1.Teleoperator/Calibrate',
+                request_serializer=device__pb2.CalibrateRequest.SerializeToString,
                 response_deserializer=device__pb2.CalibrationInfo.FromString,
                 _registered_method=True)
         self.CalibrateDone = channel.unary_unary(
-                '/Teleoperator/CalibrateDone',
+                '/rdc.v1.Teleoperator/CalibrateDone',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
                 response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
                 _registered_method=True)
         self.StreamCalibration = channel.unary_stream(
-                '/Teleoperator/StreamCalibration',
+                '/rdc.v1.Teleoperator/StreamCalibration',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
                 response_deserializer=device__pb2.CalibrationFrame.FromString,
                 _registered_method=True)
         self.Disconnect = channel.unary_unary(
-                '/Teleoperator/Disconnect',
+                '/rdc.v1.Teleoperator/Disconnect',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
                 response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
                 _registered_method=True)
         self.GetObservation = channel.unary_stream(
-                '/Teleoperator/GetObservation',
+                '/rdc.v1.Teleoperator/GetObservation',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
                 response_deserializer=device__pb2.OneFeature.FromString,
                 _registered_method=True)
         self.GetAction = channel.unary_stream(
-                '/Teleoperator/GetAction',
+                '/rdc.v1.Teleoperator/GetAction',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
                 response_deserializer=device__pb2.OneFeature.FromString,
                 _registered_method=True)
         self.SendFeedback = channel.stream_unary(
-                '/Teleoperator/SendFeedback',
+                '/rdc.v1.Teleoperator/SendFeedback',
                 request_serializer=device__pb2.OneFeature.SerializeToString,
                 response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
                 _registered_method=True)
         self.GetStatus = channel.unary_unary(
-                '/Teleoperator/GetStatus',
+                '/rdc.v1.Teleoperator/GetStatus',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
                 response_deserializer=device__pb2.DeviceInfo.FromString,
                 _registered_method=True)
         self.SetReference = channel.unary_unary(
-                '/Teleoperator/SetReference',
+                '/rdc.v1.Teleoperator/SetReference',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
                 response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
                 _registered_method=True)
@@ -650,19 +556,7 @@ class TeleoperatorStub:
 class TeleoperatorServicer:
     """Missing associated documentation comment in .proto file."""
 
-    def GetObservationFeatureInfo(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def GetActionFeatureInfo(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def GetFeedbackFeatureInfo(self, request, context):
+    def GetInfo(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -723,7 +617,8 @@ class TeleoperatorServicer:
         raise NotImplementedError('Method not implemented!')
 
     def SetReference(self, request, context):
-        """Missing associated documentation comment in .proto file."""
+        """锁定当前位姿为基准;之后 GetAction 输出相对该基准的 delta(A 类 engage 协议)。
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -731,20 +626,10 @@ class TeleoperatorServicer:
 
 def add_TeleoperatorServicer_to_server(servicer, server):
     rpc_method_handlers = {
-            'GetObservationFeatureInfo': grpc.unary_stream_rpc_method_handler(
-                    servicer.GetObservationFeatureInfo,
-                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
-                    response_serializer=device__pb2.OneFeatureInfo.SerializeToString,
-            ),
-            'GetActionFeatureInfo': grpc.unary_stream_rpc_method_handler(
-                    servicer.GetActionFeatureInfo,
-                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
-                    response_serializer=device__pb2.OneFeatureInfo.SerializeToString,
-            ),
-            'GetFeedbackFeatureInfo': grpc.unary_stream_rpc_method_handler(
-                    servicer.GetFeedbackFeatureInfo,
-                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
-                    response_serializer=device__pb2.OneFeatureInfo.SerializeToString,
+            'GetInfo': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetInfo,
+                    request_deserializer=device__pb2.GetInfoRequest.FromString,
+                    response_serializer=device__pb2.GetInfoResponse.SerializeToString,
             ),
             'Connect': grpc.unary_unary_rpc_method_handler(
                     servicer.Connect,
@@ -753,7 +638,7 @@ def add_TeleoperatorServicer_to_server(servicer, server):
             ),
             'Calibrate': grpc.unary_unary_rpc_method_handler(
                     servicer.Calibrate,
-                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                    request_deserializer=device__pb2.CalibrateRequest.FromString,
                     response_serializer=device__pb2.CalibrationInfo.SerializeToString,
             ),
             'CalibrateDone': grpc.unary_unary_rpc_method_handler(
@@ -798,9 +683,9 @@ def add_TeleoperatorServicer_to_server(servicer, server):
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-            'Teleoperator', rpc_method_handlers)
+            'rdc.v1.Teleoperator', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('Teleoperator', rpc_method_handlers)
+    server.add_registered_method_handlers('rdc.v1.Teleoperator', rpc_method_handlers)
 
 
  # This class is part of an EXPERIMENTAL API.
@@ -808,7 +693,7 @@ class Teleoperator:
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod
-    def GetObservationFeatureInfo(request,
+    def GetInfo(request,
             target,
             options=(),
             channel_credentials=None,
@@ -818,66 +703,12 @@ class Teleoperator:
             wait_for_ready=None,
             timeout=None,
             metadata=None):
-        return grpc.experimental.unary_stream(
+        return grpc.experimental.unary_unary(
             request,
             target,
-            '/Teleoperator/GetObservationFeatureInfo',
-            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-            device__pb2.OneFeatureInfo.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def GetActionFeatureInfo(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_stream(
-            request,
-            target,
-            '/Teleoperator/GetActionFeatureInfo',
-            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-            device__pb2.OneFeatureInfo.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def GetFeedbackFeatureInfo(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_stream(
-            request,
-            target,
-            '/Teleoperator/GetFeedbackFeatureInfo',
-            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-            device__pb2.OneFeatureInfo.FromString,
+            '/rdc.v1.Teleoperator/GetInfo',
+            device__pb2.GetInfoRequest.SerializeToString,
+            device__pb2.GetInfoResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -902,7 +733,7 @@ class Teleoperator:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/Teleoperator/Connect',
+            '/rdc.v1.Teleoperator/Connect',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             device__pb2.CalibrationInfo.FromString,
             options,
@@ -929,8 +760,8 @@ class Teleoperator:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/Teleoperator/Calibrate',
-            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            '/rdc.v1.Teleoperator/Calibrate',
+            device__pb2.CalibrateRequest.SerializeToString,
             device__pb2.CalibrationInfo.FromString,
             options,
             channel_credentials,
@@ -956,7 +787,7 @@ class Teleoperator:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/Teleoperator/CalibrateDone',
+            '/rdc.v1.Teleoperator/CalibrateDone',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             google_dot_protobuf_dot_empty__pb2.Empty.FromString,
             options,
@@ -983,7 +814,7 @@ class Teleoperator:
         return grpc.experimental.unary_stream(
             request,
             target,
-            '/Teleoperator/StreamCalibration',
+            '/rdc.v1.Teleoperator/StreamCalibration',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             device__pb2.CalibrationFrame.FromString,
             options,
@@ -1010,7 +841,7 @@ class Teleoperator:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/Teleoperator/Disconnect',
+            '/rdc.v1.Teleoperator/Disconnect',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             google_dot_protobuf_dot_empty__pb2.Empty.FromString,
             options,
@@ -1037,7 +868,7 @@ class Teleoperator:
         return grpc.experimental.unary_stream(
             request,
             target,
-            '/Teleoperator/GetObservation',
+            '/rdc.v1.Teleoperator/GetObservation',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             device__pb2.OneFeature.FromString,
             options,
@@ -1064,7 +895,7 @@ class Teleoperator:
         return grpc.experimental.unary_stream(
             request,
             target,
-            '/Teleoperator/GetAction',
+            '/rdc.v1.Teleoperator/GetAction',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             device__pb2.OneFeature.FromString,
             options,
@@ -1091,7 +922,7 @@ class Teleoperator:
         return grpc.experimental.stream_unary(
             request_iterator,
             target,
-            '/Teleoperator/SendFeedback',
+            '/rdc.v1.Teleoperator/SendFeedback',
             device__pb2.OneFeature.SerializeToString,
             google_dot_protobuf_dot_empty__pb2.Empty.FromString,
             options,
@@ -1118,7 +949,7 @@ class Teleoperator:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/Teleoperator/GetStatus',
+            '/rdc.v1.Teleoperator/GetStatus',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             device__pb2.DeviceInfo.FromString,
             options,
@@ -1145,7 +976,7 @@ class Teleoperator:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/Teleoperator/SetReference',
+            '/rdc.v1.Teleoperator/SetReference',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             google_dot_protobuf_dot_empty__pb2.Empty.FromString,
             options,

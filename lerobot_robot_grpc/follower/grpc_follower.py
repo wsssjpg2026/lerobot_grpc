@@ -59,14 +59,56 @@ class GRPCFollower(Robot):
         self._is_connected = False
         self._is_calibrated = False
         self.need_warmup = config.need_warmup
+        self.force_recalibrate = config.force_recalibrate
+
+    def _get_or_create_stub(self) -> device_pb2_grpc.RobotStub:
+        """Lazily create the gRPC channel and stub, reused by connect()."""
+        if self.stub is None:
+            if self.config.use_ssl:
+                with open(self.config.ssl_cert_path, "rb") as f:
+                    creds = grpc.ssl_channel_credentials(f.read())
+                self.channel = grpc.secure_channel(self.address, creds)
+            else:
+                self.channel = grpc.insecure_channel(self.address)
+            self.stub = device_pb2_grpc.RobotStub(self.channel)
+        return self.stub
+
+    def _ensure_feature_info(self) -> None:
+        """Populate feature info dicts via GetInfo RPC if not yet populated.
+
+        This allows lerobot-record to access observation_features / action_features
+        BEFORE connect(), since the record script builds the dataset schema before
+        calling connect().
+        """
+        if self._obs_ft_info:
+            return
+        try:
+            info = self._get_or_create_stub().GetInfo(
+                device_pb2.GetInfoRequest(), timeout=self.connect_timeout_s
+            )
+            for fi in info.observation_features:
+                self._obs_ft_info[fi.key] = fi
+            for fi in info.action_features:
+                self._act_ft_info[fi.key] = fi
+            for fi in info.feedback_features:
+                self._fb_ft_info[fi.key] = fi
+        except grpc.RpcError as e:
+            logger.warning(f"Pre-connect GetInfo failed for {self.address}: {e}")
 
     @property
     def observation_features(self) -> dict[str, type | tuple]:
+        self._ensure_feature_info()
         return {k: self._decode_feature_info(v)[1] for k, v in self._obs_ft_info.items()}
 
     @property
     def action_features(self) -> dict[str, type | tuple]:
+        self._ensure_feature_info()
         return {k: self._decode_feature_info(v)[1] for k, v in self._act_ft_info.items()}
+
+    @property
+    def cameras(self) -> dict[str, None]:
+        self._ensure_feature_info()
+        return {k: None for k, v in self.observation_features.items() if isinstance(v, tuple)}
 
     @property
     def is_connected(self) -> bool:
@@ -136,13 +178,7 @@ class GRPCFollower(Robot):
         logger.info(f"Connecting {self.id} to GRPCFollower at {self.address}...")
 
         try:
-            if self.config.use_ssl:
-                with open(self.config.ssl_cert_path, "rb") as f:
-                    creds = grpc.ssl_channel_credentials(f.read())
-                self.channel = grpc.secure_channel(self.address, creds)
-            else:
-                self.channel = grpc.insecure_channel(self.address)
-            self.stub = device_pb2_grpc.RobotStub(self.channel)
+            self._get_or_create_stub()
 
             calib_info = self.stub.Connect(Empty(), timeout=self.warmup_timeout_s)
             self._is_connected = True
@@ -163,17 +199,15 @@ class GRPCFollower(Robot):
             else:
                 raise DeviceNotConnectedError("Failed to retrieve calibration info from GRPCFollower.")
 
-            for feature_info in self.stub.GetObservationFeatureInfo(Empty(), timeout=self.warmup_timeout_s):
-                self._obs_ft_info[feature_info.key] = feature_info
-                self._init_feature(feature_info, self._latest_obs_ft)
-            for feature_info in self.stub.GetActionFeatureInfo(Empty(), timeout=self.warmup_timeout_s):
-                self._act_ft_info[feature_info.key] = feature_info
-                self._init_feature(feature_info, self._latest_act_ft)
-            for feature_info in self.stub.GetFeedbackFeatureInfo(Empty(), timeout=self.warmup_timeout_s):
-                self._fb_ft_info[feature_info.key] = feature_info
-                self._init_feature(feature_info, self._latest_fb_ft)
+            self._ensure_feature_info()
+            for fi in self._obs_ft_info.values():
+                self._init_feature(fi, self._latest_obs_ft)
+            for fi in self._act_ft_info.values():
+                self._init_feature(fi, self._latest_act_ft)
+            for fi in self._fb_ft_info.values():
+                self._init_feature(fi, self._latest_fb_ft)
 
-            if self.need_warmup:
+            if self.need_warmup and self._is_calibrated:
                 if self.get_device_status() == device_pb2.DeviceStatus.FATAL:
                     raise DeviceNotConnectedError(
                         f"GRPCFollower at {self.address} reported a fatal state (e.g. failed calibration); "
@@ -202,7 +236,9 @@ class GRPCFollower(Robot):
                 raise DeviceNotConnectedError(
                     f"Calibration of GRPCFollower at {self.address} failed on the server. Check the server logs."
                 )
-            calib_info = self.stub.Calibrate(Empty(), timeout=self.connect_timeout_s)
+            calib_info = self.stub.Calibrate(
+                device_pb2.CalibrateRequest(force=False), timeout=self.connect_timeout_s
+            )
             if calib_info.status == device_pb2.CalibrationStatus.CALIBRATED:
                 self._is_calibrated = True
                 logger.info(f"GRPCFollower at {self.address} calibrated successfully.")
@@ -261,12 +297,18 @@ class GRPCFollower(Robot):
         logger.info(f"Calibrating GRPCFollower at {self.address}...")
         if not self.is_connected:
             raise DeviceNotConnectedError("Cannot calibrate: GRPCFollower is not connected.")
-        if self.is_calibrated:
+        if self.is_calibrated and not self.force_recalibrate:
             logger.info(f"GRPCFollower at {self.address} is already calibrated.")
             return
+        if self.force_recalibrate:
+            logger.info(f"Force recalibration requested for GRPCFollower at {self.address}.")
+            self._is_calibrated = False
 
         try:
-            calib_response = self.stub.Calibrate(Empty(), timeout=self.connect_timeout_s)
+            calib_response = self.stub.Calibrate(
+                device_pb2.CalibrateRequest(force=self.force_recalibrate),
+                timeout=self.connect_timeout_s,
+            )
             if calib_response.status == device_pb2.CalibrationStatus.CALIBRATED:
                 self._is_calibrated = True
                 logger.info(f"GRPCFollower at {self.address} calibrated successfully.")
@@ -321,14 +363,20 @@ class GRPCFollower(Robot):
         for key in action.keys():
             self._latest_act_ft[key] = action[key]
         try:
-            self.stub.SendAction(
-                encode_feature(self._act_ft_info, self._latest_act_ft), timeout=self.data_timeout_s
+            req = device_pb2.Action(
+                features=list(encode_feature(self._act_ft_info, self._latest_act_ft))
             )
+            resp = self.stub.SendAction(req, timeout=self.data_timeout_s)
         except grpc.RpcError as e:
             raise DeviceNotConnectedError(
                 f"Failed to send action to GRPCFollower at {self.address}: {e}"
             ) from e
 
+        # 解码服务端返回的 executed(so101 A 类 ≈ commanded;B 类为服务端 IK 后关节角)。
+        executed: RobotAction = {}
+        for feat in resp.features:
+            load_feature(feat, self._act_ft_info, executed)
+        self._latest_act_ft.update(executed)
         return self._latest_act_ft.copy()
 
     @check_if_not_connected
