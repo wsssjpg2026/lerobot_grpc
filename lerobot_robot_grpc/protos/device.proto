@@ -1,42 +1,73 @@
 syntax = "proto3";
 
+package rdc.v1;
+
 import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+// ============================================================
+// rdc.v1 device layer — Robot / Teleoperator services.
+//
+// 合并版(取 all-in-one rdc.v1 设计 + lerobot_grpc 工作实现之长):
+//   - package rdc.v1(治理,与 all-in-one 对齐)
+//   - 所有 enum 遵循 *_UNSPECIFIED=0 惯例(proto3 最佳实践)
+//   - OneFeature 增 produce_ts + quality(rdc.v1 可观测性;adapter 打戳)
+//   - SendAction 改 unary Action → Action(返回 executed;rdc.v1 ADR-0008)
+//   - 三个 Get*FeatureInfo 合并为一个 GetInfo(一次往返拿全 schema)
+//   - 标定暂留 device service(Calibrate/CalibrateDone/StreamCalibration)
+// schema-once(OneFeatureInfo 一次性协商)+ 瘦帧(OneFeature)的热路径拆分
+// 沿用 lerobot_grpc 原设计——这是它在带宽上优于 NamedTensor-per-frame 的地方。
+// ============================================================
 
 enum DataType {
-    FLOAT32 = 0;
-    UINT8 = 1;
-    UINT16 = 2;
-    INT32 = 3;
+    DATA_TYPE_UNSPECIFIED = 0;
+    FLOAT32 = 1;
+    UINT8 = 2;
+    UINT16 = 3;
+    INT32 = 4;
 }
 
 enum Criticality {
-    CRITICAL = 0;   
-    AUXILIARY = 1;
+    CRITICALITY_UNSPECIFIED = 0;
+    CRITICAL = 1;
+    AUXILIARY = 2;
 }
 
 enum WatchDogLevel {
-    A = 0;  // SDK已具备
-    B = 1;  // SDK不具备但开放了急停接口
-    C = 2;  // 无相关接口
+    WATCH_DOG_LEVEL_UNSPECIFIED = 0;
+    A = 1;  // SDK已具备
+    B = 2;  // SDK不具备但开放了急停接口
+    C = 3;  // 无相关接口
 }
 
 enum Encoding {
-    RAW = 0;
-    JPEG = 1;
-    PNG = 2;
+    ENCODING_UNSPECIFIED = 0;
+    RAW = 1;
+    JPEG = 2;
+    PNG = 3;
+}
+
+// 帧质量(adapter 在 degraded/stale 时标记,用于 stale 帧检测与降级)。
+enum FrameQuality {
+    FRAME_QUALITY_UNSPECIFIED = 0;
+    FRAME_QUALITY_GOOD = 1;
+    FRAME_QUALITY_DEGRADED = 2;
+    FRAME_QUALITY_STALE = 3;
 }
 
 enum CalibrationStatus {
-    CALIBRATED = 0;
-    NEED_TO_CALIBRATE = 1;
-    CALIBRATING = 2;
+    CALIBRATION_STATUS_UNSPECIFIED = 0;
+    CALIBRATED = 1;
+    NEED_TO_CALIBRATE = 2;
+    CALIBRATING = 3;
 }
 
 enum DeviceStatus {
-    FATAL = 0;
-    IDLE = 1;
-    COLLECTION = 2;
-    CONTROL = 3;
+    DEVICE_STATUS_UNSPECIFIED = 0;
+    FATAL = 1;
+    IDLE = 2;
+    COLLECTION = 3;
+    CONTROL = 4;
 }
 
 message ImageShape {
@@ -65,10 +96,20 @@ message OneFeature {
     // RAW payloads: little-endian scalar bytes, or a raw HWC array in the declared DataType.
     // JPEG/PNG payloads: compressed image bytes.
     bytes data = 2;
+    // 该帧数据产生时刻(adapter 打戳)。schema 协商后每帧只带 key+data+ts+quality,
+    // 不重发 shape/dtype/encoding——热路径省带宽(rdc.v1 NamedTensor-per-frame 的教训)。
+    google.protobuf.Timestamp produce_ts = 3;
+    FrameQuality quality = 4;
 }
 
 message CalibrationInfo {
     CalibrationStatus status = 1;
+}
+
+// Calibrate RPC 请求。force=true 时即使已有标定文件也强制重跑录量程
+// (等价于 native so101 calibrate() 里输入 'c')。默认 false = 沿用快路径。
+message CalibrateRequest {
+    bool force = 1;
 }
 
 message CalibrationFrame {
@@ -85,31 +126,48 @@ message DeviceInfo {
     DeviceStatus status = 1;
 }
 
+// 一次 send_action 的请求/响应载体。unary RPC:
+//   - 请求 = commanded features(关节角 或 ΔT,依 TeleopKind)
+//   - 响应 = executed features(实际执行的关节角+夹爪,IK 后;ADR-0008)
+// so101(A 类,关节空间同构)响应≈请求(echo commanded);B 类(末端位姿+服务端 IK)
+// 响应≠请求——客户端发的 ΔT,只有 adapter 知道 IK 后的真实关节角,必须返回。
+message Action {
+    repeated OneFeature features = 1;
+}
+
+// GetInfo:一次往返拿全 schema(替代原先三个 Get*FeatureInfo 流式 RPC)。
+// 连接时调用一次;之后每帧的 OneFeature 不再重发 shape/dtype/encoding。
+message GetInfoRequest {}
+
+message GetInfoResponse {
+    repeated OneFeatureInfo observation_features = 1;
+    repeated OneFeatureInfo action_features = 2;
+    repeated OneFeatureInfo feedback_features = 3;
+}
+
 service Robot {
-    rpc GetObservationFeatureInfo(google.protobuf.Empty) returns (stream OneFeatureInfo);
-    rpc GetActionFeatureInfo(google.protobuf.Empty) returns (stream OneFeatureInfo);
-    rpc GetFeedbackFeatureInfo(google.protobuf.Empty) returns (stream OneFeatureInfo);
+    // schema 一次性协商(替代三个 Get*FeatureInfo)
+    rpc GetInfo(GetInfoRequest) returns (GetInfoResponse);
 
     rpc Connect(google.protobuf.Empty) returns (CalibrationInfo);
-    rpc Calibrate(google.protobuf.Empty) returns (CalibrationInfo);
+    rpc Calibrate(CalibrateRequest) returns (CalibrationInfo);
     rpc CalibrateDone(google.protobuf.Empty) returns (google.protobuf.Empty);
     rpc StreamCalibration(google.protobuf.Empty) returns (stream CalibrationFrame);
     rpc Disconnect(google.protobuf.Empty) returns (google.protobuf.Empty);
 
     rpc GetObservation(google.protobuf.Empty) returns (stream OneFeature);
-    rpc SendAction(stream OneFeature) returns (google.protobuf.Empty);
+    // unary:请求=commanded,响应=executed(不再是 fire-and-forget 的 stream→Empty)。
+    rpc SendAction(Action) returns (Action);
     rpc GetFeedback(google.protobuf.Empty) returns (stream OneFeature);
 
     rpc GetStatus(google.protobuf.Empty) returns (DeviceInfo);
 }
 
 service Teleoperator {
-    rpc GetObservationFeatureInfo(google.protobuf.Empty) returns (stream OneFeatureInfo);
-    rpc GetActionFeatureInfo(google.protobuf.Empty) returns (stream OneFeatureInfo);
-    rpc GetFeedbackFeatureInfo(google.protobuf.Empty) returns (stream OneFeatureInfo);
+    rpc GetInfo(GetInfoRequest) returns (GetInfoResponse);
 
     rpc Connect(google.protobuf.Empty) returns (CalibrationInfo);
-    rpc Calibrate(google.protobuf.Empty) returns (CalibrationInfo);
+    rpc Calibrate(CalibrateRequest) returns (CalibrationInfo);
     rpc CalibrateDone(google.protobuf.Empty) returns (google.protobuf.Empty);
     rpc StreamCalibration(google.protobuf.Empty) returns (stream CalibrationFrame);
     rpc Disconnect(google.protobuf.Empty) returns (google.protobuf.Empty);
@@ -120,5 +178,6 @@ service Teleoperator {
 
     rpc GetStatus(google.protobuf.Empty) returns (DeviceInfo);
 
+    // 锁定当前位姿为基准;之后 GetAction 输出相对该基准的 delta(A 类 engage 协议)。
     rpc SetReference(google.protobuf.Empty) returns (google.protobuf.Empty);
 }

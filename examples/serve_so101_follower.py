@@ -1,22 +1,26 @@
 """Launch a gRPC follower server wrapping a real SO-101 follower arm.
 
-Run this on the machine that has the follower arm plugged in. A remote (or
-local) recording/teleop machine then drives it with:
+Uses standard lerobot config syntax (including --robot.cameras.*):
 
-    lerobot-teleoperate \
-        --robot.type=grpc_follower --robot.address=<this_host>:5555 \
-        --teleop.type=so101_leader --teleop.port=<leader_port>
+    python serve_so101_follower.py \\
+        --robot.port=COM6 --robot.id=follower \\
+        --robot.cameras.top.type=opencv \\
+        --robot.cameras.top.index_or_path=0 \\
+        --robot.cameras.top.width=640 --robot.cameras.top.height=480 \\
+        --robot.cameras.top.fps=30 \\
+        --address=localhost:5555
 
-The arm MUST be calibrated first (same id as used at calibration time):
-
-    lerobot-calibrate --robot.type=so101_follower --robot.port=<port> --robot.id=follower
-
-See docs/extending.md §9 for the general launch pattern.
+The arm connects on first client Connect RPC. Calibration via
+Calibrate/CalibrateDone RPCs (use lerobot-calibrate --robot.type=grpc_follower ...).
 """
-import argparse
 import logging
 import time
+from dataclasses import dataclass
 
+import draccus
+
+from lerobot.cameras.opencv import OpenCVCameraConfig  # noqa: F401 -- register for draccus
+from lerobot.cameras.realsense import RealSenseCameraConfig  # noqa: F401
 from lerobot.robots.so_follower.config_so_follower import SOFollowerRobotConfig
 from lerobot_robot_grpc.follower.follower_server import FollowerServer, FollowerServerConfig
 from lerobot_robot_grpc.follower.so101_follower_server import (
@@ -25,23 +29,24 @@ from lerobot_robot_grpc.follower.so101_follower_server import (
 )
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--port", default="COM6", help="Serial port of the follower arm (e.g. COM6, /dev/ttyACM0)")
-    parser.add_argument("--id", default="follower", help="Robot id — must match the id used for calibration")
-    parser.add_argument("--address", default="0.0.0.0:5555", help="gRPC listen address")
-    args = parser.parse_args()
+@dataclass
+class ServeFollowerConfig:
+    robot: SOFollowerRobotConfig
+    address: str = "0.0.0.0:5555"
 
+
+@draccus.wrap()
+def main(cfg: ServeFollowerConfig):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", force=True)
 
-    robot = SO101FollowerAdapted(SOFollowerRobotConfig(port=args.port, id=args.id))
+    robot = SO101FollowerAdapted(cfg.robot)
     servicer = SO101FollowerServicer(robot)
-    server = FollowerServer(FollowerServerConfig(address=args.address), servicer)
+    server = FollowerServer(FollowerServerConfig(address=cfg.address), servicer)
     server.start()
+    cam_names = list(cfg.robot.cameras.keys())
     logging.info(
-        "SO-101 follower server ready: address=%s serial=%s id=%s "
-        "(arm connects on first client Connect RPC; calibration via Calibrate/CalibrateDone RPCs)",
-        args.address, args.port, args.id,
+        "SO-101 follower server ready: address=%s serial=%s id=%s cameras=%s",
+        cfg.address, cfg.robot.port, cfg.robot.id, cam_names,
     )
     try:
         while True:

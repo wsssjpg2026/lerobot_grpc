@@ -21,6 +21,8 @@ class GRPCFollowerConfig(RobotConfig):
     data_timeout_s: float = 5.0
     max_calibration_attempts: int = 10
 
+    force_recalibrate: bool = False
+
     use_ssl: bool = False
     ssl_cert_path: Path | None = None
 

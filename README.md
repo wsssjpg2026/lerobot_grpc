@@ -15,24 +15,181 @@ Plus the **server** side that wraps real SO101 hardware and serves it over gRPC 
 
 ## Install
 
-```bash
-# Client only (recording/training machine)
-pip install "lerobot[grpcio-dep]>=0.6.1,<0.7"
-pip install git+https://github.com/<your-org>/lerobot_grpc
+### Prerequisites
 
-# Robot-side machine that drives real SO101 hardware
-pip install "lerobot_robot_grpc[server]" git+https://github.com/<your-org>/lerobot_grpc
+- Python >= 3.12
+- lerobot >= 0.6.1, < 0.7
+- A conda/venv environment with lerobot already installed
+
+### Option A: Full install (client + server on same machine)
+
+Typical for a development machine that both drives hardware and runs recording:
+
+```bash
+pip install -e ".[all]"
 ```
+
+This pulls in:
+- `lerobot[grpcio-dep]` — gRPC core (grpcio, protobuf)
+- `lerobot[dataset]` — recording (datasets, pyarrow, av, torchcodec)
+- `lerobot[hardware]` — keyboard controls (**pynput**), pyserial, deepdiff
+- `lerobot[viz]` — real-time visualization (rerun-sdk, foxglove-sdk)
+- `lerobot[feetech]` — Feetech motor SDK for SO101 hardware
+
+### Option B: Client only (recording/training machine)
+
+```bash
+pip install -e ".[client]"
+```
+
+### Option C: Server only (robot-side machine)
+
+```bash
+pip install -e ".[server]"
+```
+
+### Windows notes
+
+- **Keyboard controls**: `pynput` (from `lerobot[hardware]`) is required for interactive recording controls (Right=next episode, Left=re-record, Esc/q=quit, n=next). Without it, `TerminalKeyListener` cannot work on Windows because it needs POSIX `termios`.
+- **Video encoding**: `torchcodec` may show a DLL loading warning on Windows if FFmpeg shared libraries are missing. This is harmless — lerobot automatically falls back to `pyav` for video encoding.
+- **rerun visualization**: `rerun-sdk` (from `lerobot[viz]`) provides real-time data visualization during recording (`--display_data=true`).
+
+## Quick reference — gRPC device parameters
+
+Both `grpc_follower` and `grpc_leader` accept these config parameters via CLI flags:
+
+| Parameter | Default | Description |
+|---|---|---|
+| `--robot.address` / `--teleop.address` | `localhost:5555` | gRPC server `host:port` |
+| `--robot.id` / `--teleop.id` | — | Device ID (used for calibration file naming) |
+| `--robot.force_recalibrate` | `false` | Bypass cached calibration and force recalibration |
+| `--robot.need_warmup` | `true` | Verify feature schema on connect |
+| `--robot.connect_timeout_s` | `5.0` | gRPC connect timeout |
+| `--robot.data_timeout_s` | `5.0` | gRPC data (observation/action) timeout |
 
 ## Usage
 
-Because the distribution name starts with `lerobot_robot_`, lerobot auto-imports this package at every CLI startup, registering both `grpc_follower` and `grpc_leader`. No `--discover_packages_path` flag needed:
+> **Line continuation**: Examples below use PowerShell syntax (`` ` ``). On bash/Linux, replace `` ` `` with `\`.
 
-```bash
-lerobot-record \
-    --robot.type=grpc_follower --robot.address=<follower-host>:5555 \
-    --teleop.type=grpc_leader  --teleop.address=<leader-host>:5555 \
-    ...
+### 1. Start the servers (robot-side)
+
+Open **two terminals** — one for the follower, one for the leader:
+
+```powershell
+# Terminal 1 — Follower server (SO101 arm on COM6, USB camera at index 0)
+python examples/serve_so101_follower.py `
+    --robot.port=COM6 `
+    --robot.id=follower `
+    --robot.cameras='{"cam": {"index": 0}}' `
+    --address=localhost:5555
+```
+
+```powershell
+# Terminal 2 — Leader server (SO101 leader arm on COM4)
+python examples/serve_so101_leader.py `
+    --robot.port=COM4 `
+    --robot.id=leader `
+    --address=localhost:5556
+```
+
+The follower server listens on `0.0.0.0:5555`; the leader server on `0.0.0.0:5556`.
+
+To find the correct serial port: `lerobot-find-port`. To find camera indices: `lerobot-find-cameras`.
+
+### 2. Calibrate — `lerobot-calibrate`
+
+Calibration is needed **once** per device (first use, after hardware change, or after motor replacement). The result is cached as a JSON file so subsequent sessions skip calibration automatically.
+
+```powershell
+# Calibrate the follower arm (6 motors: shoulder_pan, shoulder_lift, elbow_flex, wrist_pitch, wrist_roll, gripper)
+lerobot-calibrate `
+    --robot.type=grpc_follower `
+    --robot.address=127.0.0.1:5555 `
+    --robot.id=follower
+```
+
+```powershell
+# Calibrate the leader arm
+lerobot-calibrate `
+    --teleop.type=grpc_leader `
+    --teleop.address=127.0.0.1:5556 `
+    --teleop.id=leader
+```
+
+Force recalibration (ignore the cached file):
+
+```powershell
+lerobot-calibrate `
+    --robot.type=grpc_follower `
+    --robot.address=127.0.0.1:5555 `
+    --robot.id=follower `
+    --robot.force_recalibrate=true
+```
+
+Calibration files are stored at:
+- Follower: `~/.cache/huggingface/lerobot/calibration/robots/so_follower/follower.json`
+- Leader: `~/.cache/huggingface/lerobot/calibration/teleoperators/so_leader/leader.json`
+
+### 3. Teleoperate — `lerobot-teleoperate`
+
+Drive the follower arm in real time using the leader arm:
+
+```powershell
+lerobot-teleoperate `
+    --robot.type=grpc_follower --robot.address=127.0.0.1:5555 --robot.id=follower `
+    --teleop.type=grpc_leader  --teleop.address=127.0.0.1:5556 --teleop.id=leader `
+    --teleop_time_s=60 `
+    --display_data=true
+```
+
+- `--teleop_time_s=60` — run for 60 seconds (omit for unlimited until Ctrl+C).
+- `--display_data=true` — open a **rerun** viewer showing joint positions in real time.
+
+### 4. Record a dataset — `lerobot-record`
+
+Collect teleoperation episodes for training:
+
+```powershell
+lerobot-record `
+    --robot.type=grpc_follower --robot.address=127.0.0.1:5555 --robot.id=follower `
+    --teleop.type=grpc_leader  --teleop.address=127.0.0.1:5556 --teleop.id=leader `
+    --dataset.repo_id=wsss/so101_grpc_test `
+    --dataset.single_task="Pick up the cup" `
+    --dataset.num_episodes=5 `
+    --dataset.episode_time_s=30 `
+    --dataset.push_to_hub=false `
+    --display_data=true
+```
+
+Key parameters:
+
+| Parameter | Description |
+|---|---|
+| `--dataset.repo_id` | HuggingFace repo ID (`user/dataset_name`); dataset is saved locally under `~/.cache/huggingface/lerobot/` |
+| `--dataset.single_task` | Text label for every frame in this dataset |
+| `--dataset.num_episodes` | Number of episodes to record before stopping |
+| `--dataset.episode_time_s` | Duration of each episode in seconds (30 fps default) |
+| `--dataset.push_to_hub` | `false` = local only; `true` = upload to HuggingFace Hub |
+| `--display_data=true` | Open a **rerun** viewer (joint state + camera + action streams) |
+
+**Keyboard controls during recording** (requires `pynput` installed via `lerobot[hardware]`):
+
+| Key | Action |
+|---|---|
+| Right arrow / `n` | End current episode early, move to next |
+| Left arrow / `r` | Re-record current episode |
+| Esc / `q` | Stop recording |
+
+Datasets are saved to: `~/.cache/huggingface/lerobot/<repo_id>_<timestamp>/`
+
+### 5. Replay a dataset — `lerobot-replay`
+
+Play back a recorded dataset on the follower arm:
+
+```powershell
+lerobot-replay `
+    --robot.type=grpc_follower --robot.address=127.0.0.1:5555 --robot.id=follower `
+    --dataset.repo_id=wsss/so101_grpc_test
 ```
 
 ## Extending — adding new hardware

@@ -58,15 +58,14 @@ class MockFollowerServicer(FollowerServicer):
         self._last_action: dict[str, float] = {k: 0.0 for k in ACTION_KEYS}
         self._lock = threading.Lock()
 
-    # --- feature introspection: return the dict's values as the gRPC stream ---
-    def GetObservationFeatureInfo(self, request, context):
-        return iter(self._ft_info.values())
-
-    def GetActionFeatureInfo(self, request, context):
-        return iter(self._ft_info.values())
-
-    def GetFeedbackFeatureInfo(self, request, context):
-        return iter(self._ft_info.values())
+    # --- feature introspection: single GetInfo returns all three schemas ---
+    def GetInfo(self, request, context):
+        feats = list(self._ft_info.values())
+        return device_pb2.GetInfoResponse(
+            observation_features=feats,
+            action_features=feats,
+            feedback_features=feats,
+        )
 
     # --- lifecycle -----------------------------------------------------------
     def Connect(self, request, context):
@@ -92,13 +91,14 @@ class MockFollowerServicer(FollowerServicer):
         # NOTE: encode_feature needs a dict[str, OneFeatureInfo], NOT a generator.
         return encode_feature(self._ft_info, obs)
 
-    def SendAction(self, request_iterator, context):
+    def SendAction(self, request, context):
         action: dict[str, float] = {}
-        for feat in request_iterator:
+        for feat in request.features:
             load_feature(feat, self._ft_info, action)
         with self._lock:
             self._last_action = action
-        return Empty()
+        # 返回 executed(mock echo commanded,等价于 so101 A 类语义)。
+        return device_pb2.Action(features=list(encode_feature(self._ft_info, action)))
 
     def GetFeedback(self, request, context):
         with self._lock:

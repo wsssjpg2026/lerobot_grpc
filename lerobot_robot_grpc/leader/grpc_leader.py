@@ -59,13 +59,49 @@ class GRPCLeader(Teleoperator):
         self._is_connected = False
         self._is_calibrated = False
         self.need_warmup = config.need_warmup
+        self.force_recalibrate = config.force_recalibrate
+
+    def _get_or_create_stub(self) -> device_pb2_grpc.TeleoperatorStub:
+        """Lazily create the gRPC channel and stub, reused by connect()."""
+        if self.stub is None:
+            if self.config.use_ssl:
+                with open(self.config.ssl_cert_path, "rb") as f:
+                    creds = grpc.ssl_channel_credentials(f.read())
+                self.channel = grpc.secure_channel(self.address, creds)
+            else:
+                self.channel = grpc.insecure_channel(self.address)
+            self.stub = device_pb2_grpc.TeleoperatorStub(self.channel)
+        return self.stub
+
+    def _ensure_feature_info(self) -> None:
+        """Populate feature info dicts via GetInfo RPC if not yet populated.
+
+        This allows lerobot scripts to access action_features / feedback_features
+        BEFORE connect(), since some scripts build schemas before calling connect().
+        """
+        if self._act_ft_info:
+            return
+        try:
+            info = self._get_or_create_stub().GetInfo(
+                device_pb2.GetInfoRequest(), timeout=self.connect_timeout_s
+            )
+            for fi in info.observation_features:
+                self._obs_ft_info[fi.key] = fi
+            for fi in info.action_features:
+                self._act_ft_info[fi.key] = fi
+            for fi in info.feedback_features:
+                self._fb_ft_info[fi.key] = fi
+        except grpc.RpcError as e:
+            logger.warning(f"Pre-connect GetInfo failed for {self.address}: {e}")
 
     @property
     def feedback_features(self) -> dict[str, type | tuple]:
+        self._ensure_feature_info()
         return {k: self._decode_feature_info(v)[1] for k, v in self._fb_ft_info.items()}
 
     @property
     def action_features(self) -> dict[str, type | tuple]:
+        self._ensure_feature_info()
         return {k: self._decode_feature_info(v)[1] for k, v in self._act_ft_info.items()}
 
     @property
@@ -136,13 +172,7 @@ class GRPCLeader(Teleoperator):
         logger.info(f"Connecting {self.id} to GRPCLeader at {self.address}...")
 
         try:
-            if self.config.use_ssl:
-                with open(self.config.ssl_cert_path, "rb") as f:
-                    creds = grpc.ssl_channel_credentials(f.read())
-                self.channel = grpc.secure_channel(self.address, creds)
-            else:
-                self.channel = grpc.insecure_channel(self.address)
-            self.stub = device_pb2_grpc.TeleoperatorStub(self.channel)
+            self._get_or_create_stub()
 
             calib_info = self.stub.Connect(Empty(), timeout=self.warmup_timeout_s)
             self._is_connected = True
@@ -163,17 +193,15 @@ class GRPCLeader(Teleoperator):
             else:
                 raise DeviceNotConnectedError("Failed to retrieve calibration info from GRPCLeader.")
 
-            for feature_info in self.stub.GetObservationFeatureInfo(Empty(), timeout=self.warmup_timeout_s):
-                self._obs_ft_info[feature_info.key] = feature_info
-                self._init_feature(feature_info, self._latest_obs_ft)
-            for feature_info in self.stub.GetActionFeatureInfo(Empty(), timeout=self.warmup_timeout_s):
-                self._act_ft_info[feature_info.key] = feature_info
-                self._init_feature(feature_info, self._latest_act_ft)
-            for feature_info in self.stub.GetFeedbackFeatureInfo(Empty(), timeout=self.warmup_timeout_s):
-                self._fb_ft_info[feature_info.key] = feature_info
-                self._init_feature(feature_info, self._latest_fb_ft)
+            self._ensure_feature_info()
+            for fi in self._obs_ft_info.values():
+                self._init_feature(fi, self._latest_obs_ft)
+            for fi in self._act_ft_info.values():
+                self._init_feature(fi, self._latest_act_ft)
+            for fi in self._fb_ft_info.values():
+                self._init_feature(fi, self._latest_fb_ft)
 
-            if self.need_warmup:
+            if self.need_warmup and self._is_calibrated:
                 temp_act = self.get_action()
                 if not self._verify_features(temp_act, self.action_features):
                     raise DeviceNotConnectedError("Failed to warm up the GRPCLeader: action features mismatch.")
@@ -197,7 +225,9 @@ class GRPCLeader(Teleoperator):
                 raise DeviceNotConnectedError(
                     f"Calibration of GRPCLeader at {self.address} failed on the server. Check the server logs."
                 )
-            calib_info = self.stub.Calibrate(Empty(), timeout=self.connect_timeout_s)
+            calib_info = self.stub.Calibrate(
+                device_pb2.CalibrateRequest(force=False), timeout=self.connect_timeout_s
+            )
             if calib_info.status == device_pb2.CalibrationStatus.CALIBRATED:
                 self._is_calibrated = True
                 logger.info(f"GRPCLeader at {self.address} calibrated successfully.")
@@ -256,12 +286,18 @@ class GRPCLeader(Teleoperator):
         logger.info(f"Calibrating GRPCLeader at {self.address}...")
         if not self.is_connected:
             raise DeviceNotConnectedError("Cannot calibrate: GRPCLeader is not connected.")
-        if self.is_calibrated:
+        if self.is_calibrated and not self.force_recalibrate:
             logger.info(f"GRPCLeader at {self.address} is already calibrated.")
             return
+        if self.force_recalibrate:
+            logger.info(f"Force recalibration requested for GRPCLeader at {self.address}.")
+            self._is_calibrated = False
 
         try:
-            calib_response = self.stub.Calibrate(Empty(), timeout=self.connect_timeout_s)
+            calib_response = self.stub.Calibrate(
+                device_pb2.CalibrateRequest(force=self.force_recalibrate),
+                timeout=self.connect_timeout_s,
+            )
             if calib_response.status == device_pb2.CalibrationStatus.CALIBRATED:
                 self._is_calibrated = True
                 logger.info(f"GRPCLeader at {self.address} calibrated successfully.")
