@@ -29,15 +29,15 @@ enum DataType {
 
 enum Criticality {
     CRITICALITY_UNSPECIFIED = 0;
-    CRITICAL = 1;
-    AUXILIARY = 2;
+    CRITICALITY_CRITICAL = 1;
+    CRITICALITY_AUXILIARY = 2;
 }
 
 enum WatchDogLevel {
     WATCH_DOG_LEVEL_UNSPECIFIED = 0;
-    A = 1;  // SDK已具备
-    B = 2;  // SDK不具备但开放了急停接口
-    C = 3;  // 无相关接口
+    WATCH_DOG_LEVEL_A = 1;  // SDK已具备
+    WATCH_DOG_LEVEL_B = 2;  // SDK不具备但开放了急停接口
+    WATCH_DOG_LEVEL_C = 3;  // 无相关接口
 }
 
 enum Encoding {

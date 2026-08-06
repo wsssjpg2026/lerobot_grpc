@@ -178,8 +178,8 @@ class SO101LeaderServicer(LeaderServicer):
                 encoding = device_pb2.Encoding.RAW
             result[key] = device_pb2.OneFeatureInfo(
                 key=key,
-                criticality=device_pb2.Criticality.CRITICAL,
-                watchdog = device_pb2.WatchDogLevel.A,
+                criticality=device_pb2.Criticality.CRITICALITY_CRITICAL,
+                watchdog = device_pb2.WatchDogLevel.WATCH_DOG_LEVEL_A,
                 type=val_type,
                 shape=shape,
                 encoding=encoding,
