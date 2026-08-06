@@ -42,7 +42,7 @@ def _scalar_feature_info(key: str) -> device_pb2.OneFeatureInfo:
     """A CRITICAL float32 scalar feature (the shape SO-101 uses per joint)."""
     return device_pb2.OneFeatureInfo(
         key=key,
-        criticality=device_pb2.Criticality.CRITICAL,
+        criticality=device_pb2.Criticality.CRITICALITY_CRITICAL,
         type=device_pb2.DataType.FLOAT32,
         shape=device_pb2.ImageShape(H=1, W=1, C=1),
         encoding=device_pb2.Encoding.RAW,

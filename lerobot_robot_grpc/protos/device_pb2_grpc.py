@@ -3,8 +3,8 @@
 import grpc
 import warnings
 
-from lerobot_robot_grpc.protos import device_pb2 as device__pb2
 from google.protobuf import empty_pb2 as google_dot_protobuf_dot_empty__pb2
+from lerobot_robot_grpc.protos import device_pb2 as lerobot__robot__grpc_dot_protos_dot_device__pb2
 
 GRPC_GENERATED_VERSION = '1.83.0'
 GRPC_VERSION = grpc.__version__
@@ -19,7 +19,7 @@ except ImportError:
 if _version_not_supported:
     raise RuntimeError(
         f'The grpc package installed is at version {GRPC_VERSION},'
-        + ' but the generated code in device_pb2_grpc.py depends on'
+        + ' but the generated code in lerobot_robot_grpc/protos/device_pb2_grpc.py depends on'
         + f' grpcio>={GRPC_GENERATED_VERSION}.'
         + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
         + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
@@ -37,18 +37,18 @@ class RobotStub:
         """
         self.GetInfo = channel.unary_unary(
                 '/rdc.v1.Robot/GetInfo',
-                request_serializer=device__pb2.GetInfoRequest.SerializeToString,
-                response_deserializer=device__pb2.GetInfoResponse.FromString,
+                request_serializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.GetInfoRequest.SerializeToString,
+                response_deserializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.GetInfoResponse.FromString,
                 _registered_method=True)
         self.Connect = channel.unary_unary(
                 '/rdc.v1.Robot/Connect',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-                response_deserializer=device__pb2.CalibrationInfo.FromString,
+                response_deserializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.CalibrationInfo.FromString,
                 _registered_method=True)
         self.Calibrate = channel.unary_unary(
                 '/rdc.v1.Robot/Calibrate',
-                request_serializer=device__pb2.CalibrateRequest.SerializeToString,
-                response_deserializer=device__pb2.CalibrationInfo.FromString,
+                request_serializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.CalibrateRequest.SerializeToString,
+                response_deserializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.CalibrationInfo.FromString,
                 _registered_method=True)
         self.CalibrateDone = channel.unary_unary(
                 '/rdc.v1.Robot/CalibrateDone',
@@ -58,7 +58,7 @@ class RobotStub:
         self.StreamCalibration = channel.unary_stream(
                 '/rdc.v1.Robot/StreamCalibration',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-                response_deserializer=device__pb2.CalibrationFrame.FromString,
+                response_deserializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.CalibrationFrame.FromString,
                 _registered_method=True)
         self.Disconnect = channel.unary_unary(
                 '/rdc.v1.Robot/Disconnect',
@@ -68,22 +68,22 @@ class RobotStub:
         self.GetObservation = channel.unary_stream(
                 '/rdc.v1.Robot/GetObservation',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-                response_deserializer=device__pb2.OneFeature.FromString,
+                response_deserializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.OneFeature.FromString,
                 _registered_method=True)
         self.SendAction = channel.unary_unary(
                 '/rdc.v1.Robot/SendAction',
-                request_serializer=device__pb2.Action.SerializeToString,
-                response_deserializer=device__pb2.Action.FromString,
+                request_serializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.Action.SerializeToString,
+                response_deserializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.Action.FromString,
                 _registered_method=True)
         self.GetFeedback = channel.unary_stream(
                 '/rdc.v1.Robot/GetFeedback',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-                response_deserializer=device__pb2.OneFeature.FromString,
+                response_deserializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.OneFeature.FromString,
                 _registered_method=True)
         self.GetStatus = channel.unary_unary(
                 '/rdc.v1.Robot/GetStatus',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-                response_deserializer=device__pb2.DeviceInfo.FromString,
+                response_deserializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.DeviceInfo.FromString,
                 _registered_method=True)
 
 
@@ -157,18 +157,18 @@ def add_RobotServicer_to_server(servicer, server):
     rpc_method_handlers = {
             'GetInfo': grpc.unary_unary_rpc_method_handler(
                     servicer.GetInfo,
-                    request_deserializer=device__pb2.GetInfoRequest.FromString,
-                    response_serializer=device__pb2.GetInfoResponse.SerializeToString,
+                    request_deserializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.GetInfoRequest.FromString,
+                    response_serializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.GetInfoResponse.SerializeToString,
             ),
             'Connect': grpc.unary_unary_rpc_method_handler(
                     servicer.Connect,
                     request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
-                    response_serializer=device__pb2.CalibrationInfo.SerializeToString,
+                    response_serializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.CalibrationInfo.SerializeToString,
             ),
             'Calibrate': grpc.unary_unary_rpc_method_handler(
                     servicer.Calibrate,
-                    request_deserializer=device__pb2.CalibrateRequest.FromString,
-                    response_serializer=device__pb2.CalibrationInfo.SerializeToString,
+                    request_deserializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.CalibrateRequest.FromString,
+                    response_serializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.CalibrationInfo.SerializeToString,
             ),
             'CalibrateDone': grpc.unary_unary_rpc_method_handler(
                     servicer.CalibrateDone,
@@ -178,7 +178,7 @@ def add_RobotServicer_to_server(servicer, server):
             'StreamCalibration': grpc.unary_stream_rpc_method_handler(
                     servicer.StreamCalibration,
                     request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
-                    response_serializer=device__pb2.CalibrationFrame.SerializeToString,
+                    response_serializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.CalibrationFrame.SerializeToString,
             ),
             'Disconnect': grpc.unary_unary_rpc_method_handler(
                     servicer.Disconnect,
@@ -188,22 +188,22 @@ def add_RobotServicer_to_server(servicer, server):
             'GetObservation': grpc.unary_stream_rpc_method_handler(
                     servicer.GetObservation,
                     request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
-                    response_serializer=device__pb2.OneFeature.SerializeToString,
+                    response_serializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.OneFeature.SerializeToString,
             ),
             'SendAction': grpc.unary_unary_rpc_method_handler(
                     servicer.SendAction,
-                    request_deserializer=device__pb2.Action.FromString,
-                    response_serializer=device__pb2.Action.SerializeToString,
+                    request_deserializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.Action.FromString,
+                    response_serializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.Action.SerializeToString,
             ),
             'GetFeedback': grpc.unary_stream_rpc_method_handler(
                     servicer.GetFeedback,
                     request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
-                    response_serializer=device__pb2.OneFeature.SerializeToString,
+                    response_serializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.OneFeature.SerializeToString,
             ),
             'GetStatus': grpc.unary_unary_rpc_method_handler(
                     servicer.GetStatus,
                     request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
-                    response_serializer=device__pb2.DeviceInfo.SerializeToString,
+                    response_serializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.DeviceInfo.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -231,8 +231,8 @@ class Robot:
             request,
             target,
             '/rdc.v1.Robot/GetInfo',
-            device__pb2.GetInfoRequest.SerializeToString,
-            device__pb2.GetInfoResponse.FromString,
+            lerobot__robot__grpc_dot_protos_dot_device__pb2.GetInfoRequest.SerializeToString,
+            lerobot__robot__grpc_dot_protos_dot_device__pb2.GetInfoResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -259,7 +259,7 @@ class Robot:
             target,
             '/rdc.v1.Robot/Connect',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-            device__pb2.CalibrationInfo.FromString,
+            lerobot__robot__grpc_dot_protos_dot_device__pb2.CalibrationInfo.FromString,
             options,
             channel_credentials,
             insecure,
@@ -285,8 +285,8 @@ class Robot:
             request,
             target,
             '/rdc.v1.Robot/Calibrate',
-            device__pb2.CalibrateRequest.SerializeToString,
-            device__pb2.CalibrationInfo.FromString,
+            lerobot__robot__grpc_dot_protos_dot_device__pb2.CalibrateRequest.SerializeToString,
+            lerobot__robot__grpc_dot_protos_dot_device__pb2.CalibrationInfo.FromString,
             options,
             channel_credentials,
             insecure,
@@ -340,7 +340,7 @@ class Robot:
             target,
             '/rdc.v1.Robot/StreamCalibration',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-            device__pb2.CalibrationFrame.FromString,
+            lerobot__robot__grpc_dot_protos_dot_device__pb2.CalibrationFrame.FromString,
             options,
             channel_credentials,
             insecure,
@@ -394,7 +394,7 @@ class Robot:
             target,
             '/rdc.v1.Robot/GetObservation',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-            device__pb2.OneFeature.FromString,
+            lerobot__robot__grpc_dot_protos_dot_device__pb2.OneFeature.FromString,
             options,
             channel_credentials,
             insecure,
@@ -420,8 +420,8 @@ class Robot:
             request,
             target,
             '/rdc.v1.Robot/SendAction',
-            device__pb2.Action.SerializeToString,
-            device__pb2.Action.FromString,
+            lerobot__robot__grpc_dot_protos_dot_device__pb2.Action.SerializeToString,
+            lerobot__robot__grpc_dot_protos_dot_device__pb2.Action.FromString,
             options,
             channel_credentials,
             insecure,
@@ -448,7 +448,7 @@ class Robot:
             target,
             '/rdc.v1.Robot/GetFeedback',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-            device__pb2.OneFeature.FromString,
+            lerobot__robot__grpc_dot_protos_dot_device__pb2.OneFeature.FromString,
             options,
             channel_credentials,
             insecure,
@@ -475,7 +475,7 @@ class Robot:
             target,
             '/rdc.v1.Robot/GetStatus',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-            device__pb2.DeviceInfo.FromString,
+            lerobot__robot__grpc_dot_protos_dot_device__pb2.DeviceInfo.FromString,
             options,
             channel_credentials,
             insecure,
@@ -498,18 +498,18 @@ class TeleoperatorStub:
         """
         self.GetInfo = channel.unary_unary(
                 '/rdc.v1.Teleoperator/GetInfo',
-                request_serializer=device__pb2.GetInfoRequest.SerializeToString,
-                response_deserializer=device__pb2.GetInfoResponse.FromString,
+                request_serializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.GetInfoRequest.SerializeToString,
+                response_deserializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.GetInfoResponse.FromString,
                 _registered_method=True)
         self.Connect = channel.unary_unary(
                 '/rdc.v1.Teleoperator/Connect',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-                response_deserializer=device__pb2.CalibrationInfo.FromString,
+                response_deserializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.CalibrationInfo.FromString,
                 _registered_method=True)
         self.Calibrate = channel.unary_unary(
                 '/rdc.v1.Teleoperator/Calibrate',
-                request_serializer=device__pb2.CalibrateRequest.SerializeToString,
-                response_deserializer=device__pb2.CalibrationInfo.FromString,
+                request_serializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.CalibrateRequest.SerializeToString,
+                response_deserializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.CalibrationInfo.FromString,
                 _registered_method=True)
         self.CalibrateDone = channel.unary_unary(
                 '/rdc.v1.Teleoperator/CalibrateDone',
@@ -519,7 +519,7 @@ class TeleoperatorStub:
         self.StreamCalibration = channel.unary_stream(
                 '/rdc.v1.Teleoperator/StreamCalibration',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-                response_deserializer=device__pb2.CalibrationFrame.FromString,
+                response_deserializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.CalibrationFrame.FromString,
                 _registered_method=True)
         self.Disconnect = channel.unary_unary(
                 '/rdc.v1.Teleoperator/Disconnect',
@@ -529,22 +529,22 @@ class TeleoperatorStub:
         self.GetObservation = channel.unary_stream(
                 '/rdc.v1.Teleoperator/GetObservation',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-                response_deserializer=device__pb2.OneFeature.FromString,
+                response_deserializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.OneFeature.FromString,
                 _registered_method=True)
         self.GetAction = channel.unary_stream(
                 '/rdc.v1.Teleoperator/GetAction',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-                response_deserializer=device__pb2.OneFeature.FromString,
+                response_deserializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.OneFeature.FromString,
                 _registered_method=True)
         self.SendFeedback = channel.stream_unary(
                 '/rdc.v1.Teleoperator/SendFeedback',
-                request_serializer=device__pb2.OneFeature.SerializeToString,
+                request_serializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.OneFeature.SerializeToString,
                 response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
                 _registered_method=True)
         self.GetStatus = channel.unary_unary(
                 '/rdc.v1.Teleoperator/GetStatus',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-                response_deserializer=device__pb2.DeviceInfo.FromString,
+                response_deserializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.DeviceInfo.FromString,
                 _registered_method=True)
         self.SetReference = channel.unary_unary(
                 '/rdc.v1.Teleoperator/SetReference',
@@ -628,18 +628,18 @@ def add_TeleoperatorServicer_to_server(servicer, server):
     rpc_method_handlers = {
             'GetInfo': grpc.unary_unary_rpc_method_handler(
                     servicer.GetInfo,
-                    request_deserializer=device__pb2.GetInfoRequest.FromString,
-                    response_serializer=device__pb2.GetInfoResponse.SerializeToString,
+                    request_deserializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.GetInfoRequest.FromString,
+                    response_serializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.GetInfoResponse.SerializeToString,
             ),
             'Connect': grpc.unary_unary_rpc_method_handler(
                     servicer.Connect,
                     request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
-                    response_serializer=device__pb2.CalibrationInfo.SerializeToString,
+                    response_serializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.CalibrationInfo.SerializeToString,
             ),
             'Calibrate': grpc.unary_unary_rpc_method_handler(
                     servicer.Calibrate,
-                    request_deserializer=device__pb2.CalibrateRequest.FromString,
-                    response_serializer=device__pb2.CalibrationInfo.SerializeToString,
+                    request_deserializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.CalibrateRequest.FromString,
+                    response_serializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.CalibrationInfo.SerializeToString,
             ),
             'CalibrateDone': grpc.unary_unary_rpc_method_handler(
                     servicer.CalibrateDone,
@@ -649,7 +649,7 @@ def add_TeleoperatorServicer_to_server(servicer, server):
             'StreamCalibration': grpc.unary_stream_rpc_method_handler(
                     servicer.StreamCalibration,
                     request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
-                    response_serializer=device__pb2.CalibrationFrame.SerializeToString,
+                    response_serializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.CalibrationFrame.SerializeToString,
             ),
             'Disconnect': grpc.unary_unary_rpc_method_handler(
                     servicer.Disconnect,
@@ -659,22 +659,22 @@ def add_TeleoperatorServicer_to_server(servicer, server):
             'GetObservation': grpc.unary_stream_rpc_method_handler(
                     servicer.GetObservation,
                     request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
-                    response_serializer=device__pb2.OneFeature.SerializeToString,
+                    response_serializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.OneFeature.SerializeToString,
             ),
             'GetAction': grpc.unary_stream_rpc_method_handler(
                     servicer.GetAction,
                     request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
-                    response_serializer=device__pb2.OneFeature.SerializeToString,
+                    response_serializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.OneFeature.SerializeToString,
             ),
             'SendFeedback': grpc.stream_unary_rpc_method_handler(
                     servicer.SendFeedback,
-                    request_deserializer=device__pb2.OneFeature.FromString,
+                    request_deserializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.OneFeature.FromString,
                     response_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             ),
             'GetStatus': grpc.unary_unary_rpc_method_handler(
                     servicer.GetStatus,
                     request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
-                    response_serializer=device__pb2.DeviceInfo.SerializeToString,
+                    response_serializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.DeviceInfo.SerializeToString,
             ),
             'SetReference': grpc.unary_unary_rpc_method_handler(
                     servicer.SetReference,
@@ -707,8 +707,8 @@ class Teleoperator:
             request,
             target,
             '/rdc.v1.Teleoperator/GetInfo',
-            device__pb2.GetInfoRequest.SerializeToString,
-            device__pb2.GetInfoResponse.FromString,
+            lerobot__robot__grpc_dot_protos_dot_device__pb2.GetInfoRequest.SerializeToString,
+            lerobot__robot__grpc_dot_protos_dot_device__pb2.GetInfoResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -735,7 +735,7 @@ class Teleoperator:
             target,
             '/rdc.v1.Teleoperator/Connect',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-            device__pb2.CalibrationInfo.FromString,
+            lerobot__robot__grpc_dot_protos_dot_device__pb2.CalibrationInfo.FromString,
             options,
             channel_credentials,
             insecure,
@@ -761,8 +761,8 @@ class Teleoperator:
             request,
             target,
             '/rdc.v1.Teleoperator/Calibrate',
-            device__pb2.CalibrateRequest.SerializeToString,
-            device__pb2.CalibrationInfo.FromString,
+            lerobot__robot__grpc_dot_protos_dot_device__pb2.CalibrateRequest.SerializeToString,
+            lerobot__robot__grpc_dot_protos_dot_device__pb2.CalibrationInfo.FromString,
             options,
             channel_credentials,
             insecure,
@@ -816,7 +816,7 @@ class Teleoperator:
             target,
             '/rdc.v1.Teleoperator/StreamCalibration',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-            device__pb2.CalibrationFrame.FromString,
+            lerobot__robot__grpc_dot_protos_dot_device__pb2.CalibrationFrame.FromString,
             options,
             channel_credentials,
             insecure,
@@ -870,7 +870,7 @@ class Teleoperator:
             target,
             '/rdc.v1.Teleoperator/GetObservation',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-            device__pb2.OneFeature.FromString,
+            lerobot__robot__grpc_dot_protos_dot_device__pb2.OneFeature.FromString,
             options,
             channel_credentials,
             insecure,
@@ -897,7 +897,7 @@ class Teleoperator:
             target,
             '/rdc.v1.Teleoperator/GetAction',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-            device__pb2.OneFeature.FromString,
+            lerobot__robot__grpc_dot_protos_dot_device__pb2.OneFeature.FromString,
             options,
             channel_credentials,
             insecure,
@@ -923,7 +923,7 @@ class Teleoperator:
             request_iterator,
             target,
             '/rdc.v1.Teleoperator/SendFeedback',
-            device__pb2.OneFeature.SerializeToString,
+            lerobot__robot__grpc_dot_protos_dot_device__pb2.OneFeature.SerializeToString,
             google_dot_protobuf_dot_empty__pb2.Empty.FromString,
             options,
             channel_credentials,
@@ -951,7 +951,7 @@ class Teleoperator:
             target,
             '/rdc.v1.Teleoperator/GetStatus',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-            device__pb2.DeviceInfo.FromString,
+            lerobot__robot__grpc_dot_protos_dot_device__pb2.DeviceInfo.FromString,
             options,
             channel_credentials,
             insecure,

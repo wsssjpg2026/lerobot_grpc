@@ -221,10 +221,10 @@ def load_feature(
     try:
         target[key] = parse_feature(feature, ft_info)
     except (struct.error, ValueError) as e:
-        if feature_info.criticality == device_pb2.Criticality.CRITICAL:
+        if feature_info.criticality == device_pb2.Criticality.CRITICALITY_CRITICAL:
             logger.error(f"Failed to retrieve critical feature {key}: {e}")
             raise DeviceNotConnectedError(f"Failed to find critical feature '{key}'") from e
-        if feature_info.criticality == device_pb2.Criticality.AUXILIARY:
+        if feature_info.criticality == device_pb2.Criticality.CRITICALITY_AUXILIARY:
             if aux_behavior == "keep_latest":
                 logger.info(f"AUXILIARY feature '{key}' failed to parse; keeping latest value.")
             elif aux_behavior != "ignore":

@@ -189,8 +189,12 @@ Play back a recorded dataset on the follower arm:
 ```powershell
 lerobot-replay `
     --robot.type=grpc_follower --robot.address=127.0.0.1:5555 --robot.id=follower `
-    --dataset.repo_id=wsss/so101_grpc_test
+    --dataset.repo_id=wsss/so101_grpc_test_20260806_001214 `
+    --dataset.episode=0
 ```
+
+- `--dataset.repo_id` — use the **stamped** dataset name (with `_<timestamp>` suffix; check `~/.cache/huggingface/lerobot/wsss/` for exact names).
+- `--dataset.episode=0` — which episode to replay (0-indexed).
 
 ## Extending — adding new hardware
 

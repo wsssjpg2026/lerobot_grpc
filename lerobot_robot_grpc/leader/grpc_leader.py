@@ -333,7 +333,7 @@ class GRPCLeader(Teleoperator):
         missing_critical = {
             key
             for key, info in self._obs_ft_info.items()
-            if info.criticality == device_pb2.Criticality.CRITICAL and key not in received_keys
+            if info.criticality == device_pb2.Criticality.CRITICALITY_CRITICAL and key not in received_keys
         }
         if missing_critical:
             raise DeviceNotConnectedError(
@@ -362,7 +362,7 @@ class GRPCLeader(Teleoperator):
         missing_critical = {
             key
             for key, info in self._act_ft_info.items()
-            if info.criticality == device_pb2.Criticality.CRITICAL and key not in received_keys
+            if info.criticality == device_pb2.Criticality.CRITICALITY_CRITICAL and key not in received_keys
         }
         if missing_critical:
             raise DeviceNotConnectedError(
