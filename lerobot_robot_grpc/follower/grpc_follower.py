@@ -15,7 +15,15 @@ from lerobot.utils.utils import enter_pressed, move_cursor_up
 
 from lerobot.robots.robot import Robot
 from .config_grpc import GRPCFollowerConfig
-from .utils import encode_feature, feature_meta_for, load_feature, python_scalar_type_for
+from .utils import (
+    H264FrameDecoder,
+    TeleopMonitor,
+    TeleopStats,
+    encode_feature,
+    feature_meta_for,
+    load_feature,
+    python_scalar_type_for,
+)
 
 if TYPE_CHECKING or _grpc_available:
     import grpc
@@ -30,12 +38,17 @@ else:
 
 logger = logging.getLogger(__name__)
 
+# The server rejects SendAction while the bus is busy (real calibration, or a just-released
+# stuck bus call). Retry briefly instead of crashing the teleop loop on a transient busy.
+_BUSY_RETRIES = 5
+_BUSY_RETRY_DELAY_S = 1.0
+
 
 class GRPCFollower(Robot):
     config_class = GRPCFollowerConfig
     name = "grpc_follower"
 
-    def __init__(self, config: GRPCFollowerConfig):
+    def __init__(self, config: GRPCFollowerConfig, stats: TeleopStats | None = None):
         require_package("grpcio", extra="grpcio-dep", import_name="grpc")
         super().__init__(config)
         self.config = config
@@ -45,6 +58,25 @@ class GRPCFollower(Robot):
         self.connect_timeout_s = config.connect_timeout_s
         self.data_timeout_s = config.data_timeout_s
 
+        # Optional telemetry hook (see utils.py): records bytes + end-to-end
+        # latency per feature and SendAction RTT. `_stats_offset` maps the server's
+        # produce_ts wall clock onto this process's perf_counter; it is anchored
+        # lazily to the first received stamp (relative latency — immune to
+        # server<->client clock skew).
+        if stats is not None:
+            self._stats = stats
+        elif config.teleop_stats:
+            self._stats = TeleopStats()
+        else:
+            self._stats = None
+        self._stats_offset: float | None = None
+        # Auto-lifecycle monitor (config flag): started on connect(), prints the
+        # session summary on disconnect(). If the caller passed `stats=` they own
+        # the monitor (see examples/teleop_monitor_demo.py).
+        self._monitor: TeleopMonitor | None = None
+        if stats is None and config.teleop_stats:
+            self._monitor = TeleopMonitor(self._stats, interval=config.stats_interval_s)
+
         self._obs_ft_info: dict[str, device_pb2.OneFeatureInfo] = {}
         self._act_ft_info: dict[str, device_pb2.OneFeatureInfo] = {}
         self._fb_ft_info: dict[str, device_pb2.OneFeatureInfo] = {}
@@ -52,6 +84,12 @@ class GRPCFollower(Robot):
         self._latest_obs_ft: RobotObservation = {}
         self._latest_act_ft: RobotAction = {}
         self._latest_fb_ft: dict[str, Any] = {}
+
+        # Persistent observation stream: a background thread holds the GetObservation RPC
+        # open and continuously refreshes `_latest_obs_ft` (H264 cameras are decoded here).
+        self._obs_stop = threading.Event()
+        self._obs_thread: threading.Thread | None = None
+        self._latest_obs_time = 0.0
 
         self.stub: device_pb2_grpc.RobotStub | None = None
         self.channel: grpc.Channel | None = None
@@ -155,6 +193,13 @@ class GRPCFollower(Robot):
 
     def _cleanup(self):
         """Cleans up resources, such as closing the gRPC channel."""
+        self._obs_stop.set()
+        if self._obs_thread is not None:
+            self._obs_thread.join(timeout=2.0)
+            self._obs_thread = None
+        if self._monitor is not None:
+            self._monitor.stop()
+            self._monitor = None
         if self.stub:
             try:
                 self.stub.Disconnect(Empty(), timeout=self.data_timeout_s)
@@ -172,6 +217,7 @@ class GRPCFollower(Robot):
         self._latest_obs_ft.clear()
         self._latest_act_ft.clear()
         self._latest_fb_ft.clear()
+        self._latest_obs_time = 0.0
 
     @check_if_already_connected
     def connect(self, calibrate: bool = True) -> None:
@@ -206,6 +252,18 @@ class GRPCFollower(Robot):
                 self._init_feature(fi, self._latest_act_ft)
             for fi in self._fb_ft_info.values():
                 self._init_feature(fi, self._latest_fb_ft)
+
+            # Start the persistent observation stream before warmup: get_observation()
+            # now returns the latest frame consumed by this thread.
+            self._obs_stop.clear()
+            self._obs_thread = threading.Thread(
+                target=self._obs_stream_loop,
+                daemon=True,
+                name=f"grpc-follower-obs-{self.id}",
+            )
+            self._obs_thread.start()
+            if self._monitor is not None:
+                self._monitor.start()
 
             if self.need_warmup and self._is_calibrated:
                 if self.get_device_status() == device_pb2.DeviceStatus.FATAL:
@@ -298,7 +356,10 @@ class GRPCFollower(Robot):
         if not self.is_connected:
             raise DeviceNotConnectedError("Cannot calibrate: GRPCFollower is not connected.")
         if self.is_calibrated and not self.force_recalibrate:
-            logger.info(f"GRPCFollower at {self.address} is already calibrated.")
+            logger.info(
+                f"GRPCFollower at {self.address} is already calibrated. "
+                "Use --robot.force_recalibrate=true to run calibration again."
+            )
             return
         if self.force_recalibrate:
             logger.info(f"Force recalibration requested for GRPCFollower at {self.address}.")
@@ -324,33 +385,87 @@ class GRPCFollower(Robot):
             logger.error(f"gRPC error during calibration: {e}")
             raise DeviceNotConnectedError(f"Failed to calibrate GRPCFollower at {self.address}: {e}")
 
+    def _obs_stream_loop(self) -> None:
+        """Background consumer for the persistent GetObservation stream.
+
+        Holds the RPC open and refreshes `_latest_obs_ft` continuously; reconnects
+        with a 1s backoff when the stream dies. H264 decoder state is reset per
+        stream because the server always opens with a keyframe.
+        """
+        decoders: dict[str, H264FrameDecoder] = {}
+        while not self._obs_stop.is_set():
+            try:
+                stream = self.stub.GetObservation(Empty(), timeout=None)
+                decoders.clear()
+                for feat in stream:
+                    if self._obs_stop.is_set():
+                        break
+                    self._consume_obs_feature(feat, decoders)
+            except ImportError:
+                logger.error("H.264 observation stream requires PyAV; install `av` (e.g. via lerobot[dataset]).")
+                break
+            except grpc.RpcError as e:
+                if self._obs_stop.is_set():
+                    break
+                logger.warning(
+                    f"Observation stream from GRPCFollower at {self.address} interrupted ({e}); reconnecting..."
+                )
+            except Exception:
+                if self._obs_stop.is_set():
+                    break
+                logger.exception(
+                    f"Observation stream from GRPCFollower at {self.address} crashed; reconnecting..."
+                )
+            if not self._obs_stop.is_set():
+                time.sleep(1.0)
+
+    def _consume_obs_feature(
+        self, feat: device_pb2.OneFeature, decoders: dict[str, H264FrameDecoder]
+    ) -> None:
+        """Decodes one streamed feature into `_latest_obs_ft` (H264 via per-camera decoder state)."""
+        info = self._obs_ft_info.get(feat.key)
+        if info is None:
+            return
+        if info.encoding == device_pb2.Encoding.H264:
+            decoder = decoders.get(feat.key)
+            if decoder is None:
+                decoder = H264FrameDecoder(feat.key, info.shape.H, info.shape.W)
+                decoders[feat.key] = decoder
+            image = decoder.decode(feat.data)
+            if image is not None:
+                self._latest_obs_ft[feat.key] = image
+        else:
+            load_feature(feat, self._obs_ft_info, self._latest_obs_ft)
+        self._latest_obs_time = time.monotonic()
+        if self._stats is not None:
+            stamp = feat.produce_ts.seconds + feat.produce_ts.nanos / 1e9
+            latency_ms = None
+            if stamp > 0:
+                if self._stats_offset is None:
+                    self._stats_offset = time.perf_counter() - stamp
+                else:
+                    latency_ms = (time.perf_counter() - (stamp + self._stats_offset)) * 1000.0
+            self._stats.record_feature(feat.key, len(feat.data), latency_ms)
+
     @check_if_not_connected
     def get_observation(self) -> RobotObservation:
         """
-        Capture observations from the remote robot: force updates of CRITICAL
-        features; use latest possible AUXILIARY features
-        """
-        received_keys: set[str] = set()
-        try:
-            for obs in self.stub.GetObservation(Empty(), timeout=self.data_timeout_s):
-                load_feature(obs, self._obs_ft_info, self._latest_obs_ft)
-                received_keys.add(obs.key)
-        except grpc.RpcError as e:
-            raise DeviceNotConnectedError(
-                f"Failed to receive observation from GRPCFollower at {self.address}: {e}"
-            ) from e
-        if not received_keys:
-            raise DeviceNotConnectedError("No observation received from GRPCFollower.")
-        missing_critical = {
-            key
-            for key, info in self._obs_ft_info.items()
-            if info.criticality == device_pb2.Criticality.CRITICALITY_CRITICAL and key not in received_keys
-        }
-        if missing_critical:
-            raise DeviceNotConnectedError(
-                f"Missing critical feature(s) {sorted(missing_critical)} in the received observation."
-            )
+        Returns the latest observation from the remote robot.
 
+        The background stream thread refreshes `_latest_obs_ft` continuously;
+        this call blocks until the first frame arrives (warmup), then serves
+        the latest snapshot, raising if the stream has gone stale.
+        """
+        deadline = time.monotonic() + self.warmup_timeout_s
+        while self._latest_obs_time == 0.0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if self._latest_obs_time == 0.0:
+            raise DeviceNotConnectedError("No observation received from GRPCFollower.")
+        if time.monotonic() - self._latest_obs_time > self.data_timeout_s:
+            raise DeviceNotConnectedError(
+                f"Observation stream from GRPCFollower at {self.address} is stale "
+                f"(no data for {self.data_timeout_s:.1f}s)."
+            )
         return self._latest_obs_ft.copy()
 
     def configure(self):
@@ -362,15 +477,34 @@ class GRPCFollower(Robot):
 
         for key in action.keys():
             self._latest_act_ft[key] = action[key]
-        try:
-            req = device_pb2.Action(
-                features=list(encode_feature(self._act_ft_info, self._latest_act_ft))
-            )
-            resp = self.stub.SendAction(req, timeout=self.data_timeout_s)
-        except grpc.RpcError as e:
+        t0 = time.perf_counter() if self._stats is not None else None
+        attempts = _BUSY_RETRIES
+        last_error: grpc.RpcError | None = None
+        while attempts > 0:
+            attempts -= 1
+            try:
+                req = device_pb2.Action(
+                    features=list(encode_feature(self._act_ft_info, self._latest_act_ft))
+                )
+                resp = self.stub.SendAction(req, timeout=self.data_timeout_s)
+                last_error = None
+                break
+            except grpc.RpcError as e:
+                last_error = e
+                if "calibrating" not in str(e):
+                    break  # not a transient busy rejection; surface immediately
+                if attempts > 0:
+                    logger.warning(
+                        f"SendAction rejected while the robot is busy ({e}); retrying "
+                        f"({_BUSY_RETRIES - attempts}/{_BUSY_RETRIES})..."
+                    )
+                    time.sleep(_BUSY_RETRY_DELAY_S)
+        if last_error is not None:
             raise DeviceNotConnectedError(
-                f"Failed to send action to GRPCFollower at {self.address}: {e}"
-            ) from e
+                f"Failed to send action to GRPCFollower at {self.address}: {last_error}"
+            ) from last_error
+        if t0 is not None:
+            self._stats.record_action((time.perf_counter() - t0) * 1000.0)
 
         # 解码服务端返回的 executed(so101 A 类 ≈ commanded;B 类为服务端 IK 后关节角)。
         executed: RobotAction = {}
