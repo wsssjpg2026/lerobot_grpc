@@ -1,10 +1,12 @@
 """Loopback test — exercise the gRPC follower path with NO hardware.
 
-Runs a mock `FollowerServicer` in-process (it produces dummy scalar observations and
-echoes received actions as feedback), then connects the real `GRPCFollower` client to
-it and round-trips observation / action / feedback. This validates the whole stack the
-unit tests don't: proto encode/decode, feature-schema negotiation over Get*FeatureInfo,
-streaming RPCs, and the client class end-to-end.
+Runs a mock `FollowerServicer` in-process (it produces dummy scalar observations,
+a synthetic H.264-encoded camera stream, and echoes received actions as
+feedback), then connects the real `GRPCFollower` client to it and round-trips
+observation / action / feedback. This validates the whole stack the unit tests
+don't: proto encode/decode, feature-schema negotiation over GetInfo, streaming
+RPCs (including the persistent observation stream + H.264 inter-frame codec
+round-trip), and the client class end-to-end.
 
 Run from the repo root (with the env that has lerobot[grpcio-dep] + this package):
 
@@ -14,98 +16,24 @@ Run from the repo root (with the env that has lerobot[grpcio-dep] + this package
 from __future__ import annotations
 
 import logging
-import threading
+import sys
 import time
+from pathlib import Path
 
-from google.protobuf.empty_pb2 import Empty
+import numpy as np
 
-from lerobot_robot_grpc.follower.config_grpc import GRPCFollowerConfig
-from lerobot_robot_grpc.follower.follower_server import (
-    FollowerServer,
-    FollowerServerConfig,
-    FollowerServicer,
-)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from examples.mock_follower import ACTION_KEYS, CAM_HEIGHT, CAM_WIDTH, MockFollowerServicer
+
 from lerobot_robot_grpc.follower.grpc_follower import GRPCFollower
-from lerobot_robot_grpc.follower.utils import encode_feature, load_feature
-from lerobot_robot_grpc.protos import device_pb2
+from lerobot_robot_grpc.follower.config_grpc import GRPCFollowerConfig
+from lerobot_robot_grpc.follower.follower_server import FollowerServer, FollowerServerConfig
 
 logging.basicConfig(level=logging.WARNING)
 log = logging.getLogger("loopback")
 
 ADDRESS = "127.0.0.1:50051"
-
-# Two dummy scalar joints — the "hardware" this mock pretends to be.
-ACTION_KEYS = ("joint_0.pos", "joint_1.pos")
-
-
-def _scalar_feature_info(key: str) -> device_pb2.OneFeatureInfo:
-    """A CRITICAL float32 scalar feature (the shape SO-101 uses per joint)."""
-    return device_pb2.OneFeatureInfo(
-        key=key,
-        criticality=device_pb2.Criticality.CRITICALITY_CRITICAL,
-        type=device_pb2.DataType.FLOAT32,
-        shape=device_pb2.ImageShape(H=1, W=1, C=1),
-        encoding=device_pb2.Encoding.RAW,
-    )
-
-
-class MockFollowerServicer(FollowerServicer):
-    """A no-hardware follower: observations are a live counter, feedback echoes actions."""
-
-    def __init__(self):
-        self._ft_info = {k: _scalar_feature_info(k) for k in ACTION_KEYS}
-        self._calls = 0
-        self._last_action: dict[str, float] = {k: 0.0 for k in ACTION_KEYS}
-        self._lock = threading.Lock()
-
-    # --- feature introspection: single GetInfo returns all three schemas ---
-    def GetInfo(self, request, context):
-        feats = list(self._ft_info.values())
-        return device_pb2.GetInfoResponse(
-            observation_features=feats,
-            action_features=feats,
-            feedback_features=feats,
-        )
-
-    # --- lifecycle -----------------------------------------------------------
-    def Connect(self, request, context):
-        return device_pb2.CalibrationInfo(status=device_pb2.CalibrationStatus.CALIBRATED)
-
-    def Calibrate(self, request, context):
-        return device_pb2.CalibrationInfo(status=device_pb2.CalibrationStatus.CALIBRATED)
-
-    def CalibrateDone(self, request, context):
-        return Empty()
-
-    def Disconnect(self, request, context):
-        return Empty()
-
-    # --- data flow -----------------------------------------------------------
-    def GetObservation(self, request, context):
-        with self._lock:
-            self._calls += 1
-            obs = {
-                "joint_0.pos": float(self._calls),
-                "joint_1.pos": float(self._calls) * 2.0,
-            }
-        # NOTE: encode_feature needs a dict[str, OneFeatureInfo], NOT a generator.
-        return encode_feature(self._ft_info, obs)
-
-    def SendAction(self, request, context):
-        action: dict[str, float] = {}
-        for feat in request.features:
-            load_feature(feat, self._ft_info, action)
-        with self._lock:
-            self._last_action = action
-        # 返回 executed(mock echo commanded,等价于 so101 A 类语义)。
-        return device_pb2.Action(features=list(encode_feature(self._ft_info, action)))
-
-    def GetFeedback(self, request, context):
-        with self._lock:
-            return encode_feature(self._ft_info, dict(self._last_action))
-
-    def GetStatus(self, request, context):
-        return device_pb2.DeviceInfo(status=device_pb2.DeviceStatus.COLLECTION)
 
 
 def main() -> None:
@@ -119,14 +47,27 @@ def main() -> None:
         print("\n=== feature schemas negotiated from the server ===")
         print("observation_features:", client.observation_features)
         print("action_features:     ", client.action_features)
+        assert client.observation_features["cam"] == (CAM_HEIGHT, CAM_WIDTH, 3)
+        assert "cam" in client.cameras
 
-        print("\n=== get_observation() x2 (values should climb: 1,2 then 2,4) ===")
+        print("\n=== get_observation() — persistent stream + H.264 camera ===")
         obs1 = client.get_observation()
-        obs2 = client.get_observation()
-        print("obs #1:", obs1)
-        print("obs #2:", obs2)
-        assert obs1["joint_0.pos"] == 1.0 and obs1["joint_1.pos"] == 2.0, obs1
-        assert obs2["joint_0.pos"] == 2.0 and obs2["joint_1.pos"] == 4.0, obs2
+        print("obs #1 joints:", {k: round(obs1[k], 3) for k in ACTION_KEYS})
+        cam1 = obs1["cam"]
+        print("cam #1:", cam1.shape, cam1.dtype)
+        assert cam1.shape == (CAM_HEIGHT, CAM_WIDTH, 3) and cam1.dtype == np.uint8
+        assert cam1.max() > 200, "expected the white square to be visible"
+        assert abs(int(cam1[10, 300, 1]) - 180) < 25, "expected green background"
+
+        obs2 = client.get_observation()  # may be the same snapshot — stream is async
+        assert obs2["joint_0.pos"] >= obs1["joint_0.pos"]
+
+        print("\n=== stream liveness: joint values must climb with wall clock ===")
+        time.sleep(1.2)
+        obs3 = client.get_observation()
+        print("obs #3 joints:", {k: round(obs3[k], 3) for k in ACTION_KEYS})
+        assert obs3["joint_0.pos"] >= obs1["joint_0.pos"] + 1.0, "observation stream did not advance"
+        assert obs3["joint_1.pos"] == 2.0 * obs3["joint_0.pos"]
 
         print("\n=== send_action() then get_feedback() (server echoes action) ===")
         sent = client.send_action({"joint_0.pos": 1.5, "joint_1.pos": -2.5})
@@ -137,7 +78,7 @@ def main() -> None:
         assert abs(fb["joint_1.pos"] - (-2.5)) < 1e-5, fb
 
         client.disconnect()
-        print("\nLOOPBACK_PASS  — gRPC plumbing (proto/negotiation/streaming) OK")
+        print("\nLOOPBACK_PASS  — gRPC plumbing (proto/negotiation/streaming + H.264) OK")
     finally:
         server.stop()
 

@@ -45,6 +45,10 @@ enum Encoding {
     RAW = 1;
     JPEG = 2;
     PNG = 3;
+    // 帧间压缩视频编码:OneFeature.data 为单个 H.264 access unit(Annex-B,
+    // SPS/PPS 内嵌于每个关键帧)。解码端需保持跨帧状态(每相机一个解码器),
+    // 流起始包必为关键帧,且每 keyint 帧插入一个关键帧以支持中途接入/恢复。
+    H264 = 4;
 }
 
 // 帧质量(adapter 在 degraded/stale 时标记,用于 stale 帧检测与降级)。
