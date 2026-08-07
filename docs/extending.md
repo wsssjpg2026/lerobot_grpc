@@ -79,7 +79,7 @@ robot instance and implements the 11 RPCs of the `Robot` service:
 ```python
 from google.protobuf.empty_pb2 import Empty
 
-from lerobot_robot_grpc.follower.server import FollowerServicer
+from lerobot_robot_grpc.follower.follower_server import FollowerServicer
 from lerobot_robot_grpc.follower.utils import encode_feature, load_feature
 from lerobot_robot_grpc.protos import device_pb2
 
@@ -168,7 +168,7 @@ It mirrors the follower, with the direction flipped and one extra RPC:
 Everything else (feature-info encoder, lifecycle, status) is the same shape as the follower.
 
 ```python
-from lerobot_robot_grpc.leader.server import LeaderServicer, LeaderServer, LeaderServerConfig
+from lerobot_robot_grpc.leader.leader_server import LeaderServicer, LeaderServer, LeaderServerConfig
 
 class YourLeaderServicer(LeaderServicer):
     def GetAction(self, request, context):
@@ -217,6 +217,14 @@ own procedure. Three common shapes:
   `CalibrateDone`. See `follower/so101_follower_server.py` — including the `_calibrate_done`
   `threading.Event` and the non-blocking `_calibration_lock` that rejects
   observation/action access while moving.
+
+> **Bus-lock robustness** (both SO-101 servers): a `bus_call_timeout_s` watchdog
+> force-releases the lock (and dumps the stuck thread's stack) when a non-calibration
+> bus call appears wedged — e.g. a dead serial port, or a feetech SDK packet timeout
+> suppressed by a wall-clock step (the servers patch the port handler to monotonic
+> time, and bound `readPort` so a garbage serial stream can't hold the lock forever).
+> The gRPC clients likewise retry `SendAction`/`GetAction` briefly while the robot is
+> busy instead of failing the teleop loop. New servers may copy these patterns.
 - **Absolute encoders / no calibration needed** (most humanoids): `Calibrate` just
   returns `CalibrationStatus.CALIBRATED`.
 - **Define an origin** (VR leaders): not joint calibration at all — `SetReference`
@@ -289,9 +297,9 @@ There is no built-in console script per hardware (yet); launch from a small scri
 
 ```python
 import logging, time
-from lerobot_robot_grpc.follower.server import FollowerServer, FollowerServerConfig
+from lerobot_robot_grpc.follower.follower_server import FollowerServer, FollowerServerConfig
 # your servicer:
-from lerobot_robot_grpc.follower.server.your_robot_follower_server import YourRobotFollowerServicer
+from lerobot_robot_grpc.follower.your_robot_follower_server import YourRobotFollowerServicer
 # the lerobot device you wrap:
 from lerobot.robots.your_robot.config_your_robot import YourRobotConfig
 from lerobot.robots.your_robot.your_robot import YourRobot

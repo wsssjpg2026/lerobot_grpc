@@ -30,11 +30,11 @@ pip install -e ".[all]"
 ```
 
 This pulls in:
-- `lerobot[grpcio-dep]` —gRPC core (grpcio, protobuf)
-- `lerobot[dataset]` —recording (datasets, pyarrow, av, torchcodec)
-- `lerobot[hardware]` —keyboard controls (**pynput**), pyserial, deepdiff
-- `lerobot[viz]` —real-time visualization (rerun-sdk, foxglove-sdk)
-- `lerobot[feetech]` —Feetech motor SDK for SO101 hardware
+- `lerobot[grpcio-dep]` — gRPC core (grpcio, protobuf)
+- `lerobot[dataset]` — recording (datasets, pyarrow, av, torchcodec)
+- `lerobot[hardware]` — keyboard controls (**pynput**), pyserial, deepdiff
+- `lerobot[viz]` — real-time visualization (rerun-sdk, foxglove-sdk)
+- `lerobot[feetech]` — Feetech motor SDK for SO101 hardware
 
 ### Option B: Client only (recording/training machine)
 
@@ -51,7 +51,7 @@ pip install -e ".[server]"
 ### Windows notes
 
 - **Keyboard controls**: `pynput` (from `lerobot[hardware]`) is required for interactive recording controls (Right=next episode, Left=re-record, Esc/q=quit, n=next). Without it, `TerminalKeyListener` cannot work on Windows because it needs POSIX `termios`.
-- **Video encoding**: `torchcodec` may show a DLL loading warning on Windows if FFmpeg shared libraries are missing. This is harmless —lerobot automatically falls back to `pyav` for video encoding.
+- **Video encoding**: `torchcodec` may show a DLL loading warning on Windows if FFmpeg shared libraries are missing. This is harmless — lerobot automatically falls back to `pyav` for video encoding.
 - **rerun visualization**: `rerun-sdk` (from `lerobot[viz]`) provides real-time data visualization during recording (`--display_data=true`).
 
 ## Video streaming (H.264)
@@ -68,7 +68,7 @@ frame (order-of-magnitude bandwidth reduction for static scenes). Wire details:
 - The client keeps a **persistent** `GetObservation` stream open in a background
   thread; `get_observation()` returns the latest frame. Servers from this repo
   behave the same way (streams until the client disconnects).
-- `GetObservation` is now one continuous call per client —per-call "poll" style
+- `GetObservation` is now one continuous call per client — per-call "poll" style
   clients (from older versions of this repo) will time out against new servers.
   Upgrade client + server together.
 - Depth maps (`<cam>_depth`) stay RAW; `--camera_encoding=jpeg` on
@@ -77,14 +77,14 @@ frame (order-of-magnitude bandwidth reduction for static scenes). Wire details:
   missing the server falls back to JPEG automatically, and the client errors out
   clearly when an H.264 feature arrives.
 
-## Quick reference —gRPC device parameters
+## Quick reference — gRPC device parameters
 
 Both `grpc_follower` and `grpc_leader` accept these config parameters via CLI flags:
 
 | Parameter | Default | Description |
 |---|---|---|
 | `--robot.address` / `--teleop.address` | `localhost:5555` | gRPC server `host:port` |
-| `--robot.id` / `--teleop.id` | —| Device ID (used for calibration file naming) |
+| `--robot.id` / `--teleop.id` | — | Device ID (used for calibration file naming) |
 | `--robot.force_recalibrate` | `false` | Bypass cached calibration and force recalibration |
 | `--robot.need_warmup` | `true` | Verify feature schema on connect |
 | `--robot.connect_timeout_s` | `5.0` | gRPC connect timeout |
@@ -98,10 +98,10 @@ Both `grpc_follower` and `grpc_leader` accept these config parameters via CLI fl
 
 ### 1. Start the servers (robot-side)
 
-Open **two terminals** —one for the follower, one for the leader:
+Open **two terminals** — one for the follower, one for the leader:
 
 ```powershell
-# Terminal 1 —Follower server (SO101 arm on COM6, USB camera at index 0)
+# Terminal 1 — Follower server (SO101 arm on COM6, USB camera at index 0)
 python examples/serve_so101_follower.py `
     --robot.port=COM6 `
     --robot.id=follower `
@@ -114,7 +114,7 @@ python examples/serve_so101_follower.py `
 > 相机名可任取（示例用 `top`）；配置必须有 `type`（如 `opencv`）及 lerobot 要求的 `width`/`height`/`fps`。
 
 ```powershell
-# Terminal 2 —Leader server (SO101 leader arm on COM4)
+# Terminal 2 — Leader server (SO101 leader arm on COM4)
 python examples/serve_so101_leader.py `
     --robot.port=COM4 `
     --robot.id=leader `
@@ -125,7 +125,7 @@ The follower server listens on `0.0.0.0:5555`; the leader server on `0.0.0.0:555
 
 To find the correct serial port: `lerobot-find-port`. To find camera indices: `lerobot-find-cameras`.
 
-### 2. Calibrate —`lerobot-calibrate`
+### 2. Calibrate — `lerobot-calibrate`
 
 Calibration is needed **once** per device (first use, after hardware change, or after motor replacement). The result is cached as a JSON file so subsequent sessions skip calibration automatically.
 
@@ -159,7 +159,7 @@ Calibration files are stored at:
 - Follower: `~/.cache/huggingface/lerobot/calibration/robots/so_follower/follower.json`
 - Leader: `~/.cache/huggingface/lerobot/calibration/teleoperators/so_leader/leader.json`
 
-### 3. Teleoperate —`lerobot-teleoperate`
+### 3. Teleoperate — `lerobot-teleoperate`
 
 Drive the follower arm in real time using the leader arm:
 
@@ -171,11 +171,11 @@ lerobot-teleoperate `
     --display_data=true
 ```
 
-- `--teleop_time_s=60` —run for 60 seconds (omit for unlimited until Ctrl+C).
-- `--display_data=true` —open a **rerun** viewer showing joint positions in real time.
+- `--teleop_time_s=60` — run for 60 seconds (omit for unlimited until Ctrl+C).
+- `--display_data=true` — open a **rerun** viewer showing joint positions in real time.
 
 To watch bandwidth/latency live and get a session summary when it ends, add
-`--robot.teleop_stats=true` (no code changes —the flag works with any lerobot
+`--robot.teleop_stats=true` (no code changes — the flag works with any lerobot
 CLI that instantiates the follower):
 
 ```powershell
@@ -198,7 +198,26 @@ self-heals on the next refresh). A standalone demo without hardware:
 python examples/teleop_monitor_demo.py --seconds 10 --interval 1.0
 ```
 
-### 4. Record a dataset —`lerobot-record`
+#### One-shot dual-arm teleop — `examples/teleop_so101.py`
+
+No lerobot CLI needed: this script starts **both** gRPC servers in-process
+(follower arm on `--follower-port`, leader arm on `--leader-port`), connects the
+`GRPCFollower` / `GRPCLeader` clients, and streams leader joint actions to the
+follower at `--rate` Hz until Ctrl+C (or `--time` seconds):
+
+```powershell
+python examples/teleop_so101.py `
+    --follower-port=COM5 --leader-port=COM7 `
+    --cameras="{top: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}}" `
+    --teleop-stats --time 60
+```
+
+`--cameras` is the same inline-YAML dict as `serve_so101_follower.py`
+(omit for a bare joint-only teleop); `--teleop-stats` adds the live
+bandwidth/latency monitor + end-of-session summary; arms auto-calibrate on
+connect (move them through their full range when prompted, or pass `--no-calibrate`).
+
+### 4. Record a dataset — `lerobot-record`
 
 Collect teleoperation episodes for training:
 
@@ -235,7 +254,7 @@ Key parameters:
 
 Datasets are saved to: `~/.cache/huggingface/lerobot/<repo_id>_<timestamp>/`
 
-### 5. Replay a dataset —`lerobot-replay`
+### 5. Replay a dataset — `lerobot-replay`
 
 Play back a recorded dataset on the follower arm:
 
@@ -256,8 +275,8 @@ is negotiated with the server at runtime. So supporting a new robot or input dev
 means writing **one new server file**, not touching the client or the proto.
 
 See **[docs/extending.md](docs/extending.md)** for the full guide, including a worked
-Quest 3 鈫?Unitree G1 example (hand-pose retargeting, dual-arm, companion-PC leader).
+Quest 3 → Unitree G1 example (hand-pose retargeting, dual-arm, companion-PC leader).
 
 ## Why the package isn't named `lerobot_grpc`
 
-lerobot discovers third-party plugins by scanning installed distributions whose name starts with one of `lerobot_robot_` / `lerobot_teleoperator_` / `lerobot_camera_` / `lerobot_policy_` / `lerobot_env_`, then doing `importlib.import_module(dist_name)`. There is no neutral prefix, so a distribution named `lerobot_grpc` would **not** be auto-imported and would require `--robot.discover_packages_path=lerobot_grpc` on every invocation. Naming the dist `lerobot_robot_grpc` buys zero-flag UX; the import name is internal plumbing that end users never type (the git URL, the `lerobot-record` CLI, and the device `--type` values are all they see). A single import registers both the follower and the leader because registration is a side-effect of import, keyed only on the package being imported —not on which kind it registers.
+lerobot discovers third-party plugins by scanning installed distributions whose name starts with one of `lerobot_robot_` / `lerobot_teleoperator_` / `lerobot_camera_` / `lerobot_policy_` / `lerobot_env_`, then doing `importlib.import_module(dist_name)`. There is no neutral prefix, so a distribution named `lerobot_grpc` would **not** be auto-imported and would require `--robot.discover_packages_path=lerobot_grpc` on every invocation. Naming the dist `lerobot_robot_grpc` buys zero-flag UX; the import name is internal plumbing that end users never type (the git URL, the `lerobot-record` CLI, and the device `--type` values are all they see). A single import registers both the follower and the leader because registration is a side-effect of import, keyed only on the package being imported — not on which kind it registers.
