@@ -80,8 +80,8 @@ Open **two terminals** — one for the follower, one for the leader:
 python examples/serve_so101_follower.py `
     --robot.port=COM6 `
     --robot.id=follower `
-    --robot.cameras='{"cam": {"index": 0}}' `
-    --address=localhost:5555
+    --robot.cameras="{top: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}}" `
+    --address=0.0.0.0:5555
 ```
 
 ```powershell
@@ -89,10 +89,10 @@ python examples/serve_so101_follower.py `
 python examples/serve_so101_leader.py `
     --robot.port=COM4 `
     --robot.id=leader `
-    --address=localhost:5556
+    --address=0.0.0.0:5556
 ```
 
-The follower server listens on `0.0.0.0:5555`; the leader server on `0.0.0.0:5556`.
+The follower server listens on `0.0.0.0:5555`; the leader server on `0.0.0.0:5556`. Pass `--address=0.0.0.0:<port>` so clients on other machines can reach it (the default binds all interfaces; a specific IP also works but `0.0.0.0` is simplest).
 
 To find the correct serial port: `lerobot-find-port`. To find camera indices: `lerobot-find-cameras`.
 

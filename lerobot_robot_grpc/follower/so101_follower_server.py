@@ -226,6 +226,10 @@ class SO101FollowerServicer(FollowerServicer):
     def Calibrate(self, request, context):
         if not self.robot.is_connected:
             self.robot.connect(False)
+        # connect(False) 跳过了 bus.write_calibration()；若标定文件已存在，先同步到 bus，
+        # 使 is_calibrated 反映真实状态（避免已有标定时仍误启动标定线程→白屏）。
+        if self.robot.calibration and not self.robot.is_calibrated and not request.force:
+            self.robot.bus.write_calibration(self.robot.calibration)
         if self.robot.is_calibrated and not request.force:
             return device_pb2.CalibrationInfo(status=device_pb2.CalibrationStatus.CALIBRATED)
 
