@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import threading
 import time
 from typing import TYPE_CHECKING, Any
@@ -33,7 +34,14 @@ logger = logging.getLogger(__name__)
 # The server rejects GetAction while the bus is busy (real calibration, or a just-released
 # stuck bus call). Retry briefly instead of crashing the teleop loop on a transient busy.
 _BUSY_RETRIES = 5
-_BUSY_RETRY_DELAY_S = 1.0
+
+
+def _busy_retry_delay(attempt: int) -> float:
+    """Exponential backoff + jitter for transient busy retries: ~0.2s, 0.4, 0.8, capped at
+    1.0s, plus up to 100ms jitter. The previous fixed 1.0s blocked the teleop loop for up to
+    5s on a transient busy; this bounds it to ~2.5s and spreads retries to avoid thundering."""
+    base = min(1.0, 0.2 * (2 ** attempt))
+    return base + random.uniform(0.0, 0.1)
 
 
 class GRPCLeader(Teleoperator):
@@ -373,7 +381,7 @@ class GRPCLeader(Teleoperator):
                         f"GetAction rejected while the robot is busy ({e}); retrying "
                         f"({_BUSY_RETRIES - attempts}/{_BUSY_RETRIES})..."
                     )
-                    time.sleep(_BUSY_RETRY_DELAY_S)
+                    time.sleep(_busy_retry_delay(_BUSY_RETRIES - attempts - 1))
         if last_error is not None:
             raise DeviceNotConnectedError(
                 f"Failed to receive action from GRPCLeader at {self.address}: {last_error}"

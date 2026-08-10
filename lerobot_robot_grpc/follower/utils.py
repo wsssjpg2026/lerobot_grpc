@@ -20,6 +20,7 @@ import struct
 import sys
 import threading
 import time
+from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from fractions import Fraction
@@ -63,13 +64,17 @@ def _wall_now() -> float:
     return time.time_ns() / 1e9
 
 
-def _now_produce_ts() -> Timestamp:
-    """UTC timestamp marking when a frame was produced/sent - for latency observability."""
-    now = _wall_now()
+def _ts_from_wall(now: float) -> Timestamp:
+    """Builds a protobuf Timestamp from a wall-clock seconds value (Unix epoch)."""
     ts = Timestamp()
     ts.FromSeconds(int(now))
     ts.nanos = int((now % 1.0) * 1e9)
     return ts
+
+
+def _now_produce_ts() -> Timestamp:
+    """UTC timestamp marking when a frame was produced/sent - for latency observability."""
+    return _ts_from_wall(_wall_now())
 
 if TYPE_CHECKING or _grpc_available:
     from lerobot_robot_grpc.protos import device_pb2
@@ -155,8 +160,12 @@ def encode_image(feature_info: device_pb2.OneFeatureInfo, image: np.ndarray) -> 
 def encode_feature(
     ft_info: dict[str, device_pb2.OneFeatureInfo],
     source: RobotObservation | RobotAction | dict[str, Any],
+    ts_for_key: dict[str, Timestamp] | None = None,
 ) -> Iterator[device_pb2.OneFeature]:
-    ts = _now_produce_ts()
+    # When `ts_for_key` is None (e.g. SendAction), all features share one produce_ts stamped
+    # here at encode time. When provided (GetObservation), each feature is stamped at its
+    # true sample time (motor read vs camera peek) by the caller — see so101_follower_server.
+    fallback = _now_produce_ts()
     for key in source.keys():
         if key not in ft_info:
             raise KeyError(f"Unknown action key {key}")
@@ -171,6 +180,7 @@ def encode_feature(
             data = source[key].tobytes()
         else:
             data = encode_image(feature_info, source[key])
+        ts = ts_for_key[key] if ts_for_key is not None else fallback
         yield device_pb2.OneFeature(key=key, data=data, produce_ts=ts)
 
 
@@ -340,6 +350,23 @@ class H264FrameEncoder:
         ctx.options = _H264_ENCODER_OPTIONS
         self._ctx = ctx
 
+    def close(self) -> None:
+        """Releases the native PyAV encoder context. Idempotent.
+
+        PyAV 15.x has no explicit close(): the underlying FFmpeg context is freed on GC
+        (__dealloc__). We drop the reference so it can be collected promptly rather than
+        accumulating across reconnects, and flush internal buffers if available.
+        """
+        ctx = self._ctx
+        self._ctx = None
+        if ctx is not None:
+            flush = getattr(ctx, "flush_buffers", None)
+            if flush is not None:
+                try:
+                    flush()
+                except Exception:
+                    pass
+
     def encode(self, image: np.ndarray) -> list[bytes]:
         """Encodes one RGB HWC uint8 frame; returns the access units to send (usually exactly one)."""
         frame = av.VideoFrame.from_ndarray(np.ascontiguousarray(image), format="rgb24")
@@ -364,6 +391,23 @@ class H264FrameDecoder:
             image = frame.to_ndarray(format="rgb24")
         return image
 
+    def close(self) -> None:
+        """Releases the native PyAV decoder context. Idempotent.
+
+        PyAV 15.x has no explicit close(): the underlying FFmpeg context is freed on GC
+        (__dealloc__). We drop the reference so it can be collected promptly rather than
+        accumulating across reconnects, and flush internal buffers if available.
+        """
+        ctx = self._ctx
+        self._ctx = None
+        if ctx is not None:
+            flush = getattr(ctx, "flush_buffers", None)
+            if flush is not None:
+                try:
+                    flush()
+                except Exception:
+                    pass
+
 # =====================================================================
 # Teleop telemetry: real-time bandwidth/latency in the terminal
 #
@@ -374,11 +418,15 @@ class H264FrameDecoder:
 # refreshes a one-line status every `interval` seconds, and prints a full
 # summary table when the session ends (`stop()`).
 #
-# Latency is measured from the server's `produce_ts` (wall clock, stamped
-# before encode/transport) to the local perf_counter on arrival; the
-# client anchors the server-clock mapping to the first received stamp,
-# making latencies relative to that first frame (immune to clock skew).
+# Latency is measured from the server's `produce_ts` (wall clock, stamped at sample
+# time) to the local wall clock on arrival — an absolute end-to-end delta, accurate
+# when client and server share a clock (same host / NTP-synced). The client
+# (`grpc_follower.py`) falls back to relative-to-first-frame jitter on cross-host skew.
 # =====================================================================
+# Cap on retained latency / RTT samples per bucket (ring buffer). ~5 min at 60 Hz.
+_STATS_MAX_SAMPLES = 10_000
+
+
 def _percentile(samples: list[float], p: float) -> float:
     if not samples:
         return float("nan")
@@ -391,7 +439,10 @@ def _percentile(samples: list[float], p: float) -> float:
 class _KeyStats:
     frames: int = 0
     bytes: int = 0
-    latencies_ms: list[float] = field(default_factory=list)
+    # Bounded ring buffer: a long teleop session at 30-60 Hz would otherwise grow these
+    # lists without bound (and snapshot() copies them every second). Old samples drop off,
+    # keeping avg/p95/max representative of the recent window.
+    latencies_ms: deque = field(default_factory=lambda: deque(maxlen=_STATS_MAX_SAMPLES))
 
 
 class TeleopStats:
@@ -400,7 +451,7 @@ class TeleopStats:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._keys: dict[str, _KeyStats] = {}
-        self._action_rtt_ms: list[float] = []
+        self._action_rtt_ms: deque = deque(maxlen=_STATS_MAX_SAMPLES)
         self._t0 = time.monotonic()
 
     def record_feature(self, key: str, nbytes: int, latency_ms: float | None = None) -> None:
@@ -453,10 +504,15 @@ class TeleopMonitor:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._rendered_lines = 0
+        # Refreshed in start(): non-TTY stdout (log redirect / CI / `tee`) gets a single-line
+        # logger.info summary instead of ANSI repaints, which would dump raw escapes + whole
+        # multi-line blocks every tick and flood the log.
+        self._is_tty = True
 
     def start(self) -> None:
         if self._thread is not None:
             return
+        self._is_tty = sys.stdout.isatty()
         self._stop.clear()
         self._thread = threading.Thread(
             target=self._render_loop, daemon=True, name="teleop-monitor"
@@ -475,6 +531,8 @@ class TeleopMonitor:
 
     def _clear_block(self) -> None:
         """Moves the cursor up to the live block and erases every line of it."""
+        if not self._is_tty:
+            return
         n = self._rendered_lines
         if n > 0:
             sys.stdout.write(f"\033[{n + 1}A\r")
@@ -491,6 +549,11 @@ class TeleopMonitor:
 
     def _render_live(self) -> None:
         lines = self._live_lines()
+        if not self._is_tty:
+            # Non-interactive stdout: emit a single-line summary via the logger instead of
+            # ANSI repaints (which would flood a redirected log with raw escapes + full blocks).
+            logger.info(lines[0] if lines else "teleop stats")
+            return
         n = len(lines)
         out = ""
         if self._rendered_lines:

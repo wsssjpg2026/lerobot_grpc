@@ -28,7 +28,11 @@ import draccus
 
 from lerobot.cameras import CameraConfig
 from lerobot.cameras.opencv import OpenCVCameraConfig  # noqa: F401 -- register for draccus
-from lerobot.cameras.realsense import RealSenseCameraConfig  # noqa: F401
+try:
+    from lerobot.cameras.realsense import RealSenseCameraConfig  # noqa: F401 -- register for draccus
+except ImportError:
+    # pyrealsense2 not installed — RealSense cameras unavailable, but OpenCV cameras still work.
+    RealSenseCameraConfig = None
 from lerobot.robots.so_follower.config_so_follower import SOFollowerRobotConfig
 from lerobot.teleoperators.so_leader.config_so_leader import SO101LeaderConfig
 

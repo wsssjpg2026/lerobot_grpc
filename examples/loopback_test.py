@@ -16,6 +16,7 @@ Run from the repo root (with the env that has lerobot[grpcio-dep] + this package
 from __future__ import annotations
 
 import logging
+import math
 import sys
 import time
 from pathlib import Path
@@ -67,7 +68,11 @@ def main() -> None:
         obs3 = client.get_observation()
         print("obs #3 joints:", {k: round(obs3[k], 3) for k in ACTION_KEYS})
         assert obs3["joint_0.pos"] >= obs1["joint_0.pos"] + 1.0, "observation stream did not advance"
-        assert obs3["joint_1.pos"] == 2.0 * obs3["joint_0.pos"]
+        # joint_1 is 2x joint_0 in the mock, but both climb with wall clock — a microsecond
+        # race between the two reads can break an exact `==`. Compare with tolerance.
+        assert math.isclose(obs3["joint_1.pos"], 2.0 * obs3["joint_0.pos"], rel_tol=1e-6, abs_tol=1e-3), (
+            f"joint_1 should be 2x joint_0: {obs3['joint_1.pos']} vs {2.0 * obs3['joint_0.pos']}"
+        )
 
         print("\n=== send_action() then get_feedback() (server echoes action) ===")
         sent = client.send_action({"joint_0.pos": 1.5, "joint_1.pos": -2.5})

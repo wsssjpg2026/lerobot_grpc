@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import threading
 import time
 from typing import TYPE_CHECKING, Any
@@ -19,6 +20,7 @@ from .utils import (
     H264FrameDecoder,
     TeleopMonitor,
     TeleopStats,
+    _wall_now,
     encode_feature,
     feature_meta_for,
     load_feature,
@@ -41,7 +43,19 @@ logger = logging.getLogger(__name__)
 # The server rejects SendAction while the bus is busy (real calibration, or a just-released
 # stuck bus call). Retry briefly instead of crashing the teleop loop on a transient busy.
 _BUSY_RETRIES = 5
-_BUSY_RETRY_DELAY_S = 1.0
+
+
+def _busy_retry_delay(attempt: int) -> float:
+    """Exponential backoff + jitter for transient busy retries: ~0.2s, 0.4, 0.8, capped at
+    1.0s, plus up to 100ms jitter. The previous fixed 1.0s blocked the teleop loop for up to
+    5s on a transient busy; this bounds it to ~2.5s and spreads retries to avoid thundering."""
+    base = min(1.0, 0.2 * (2 ** attempt))
+    return base + random.uniform(0.0, 0.1)
+
+
+# Latency outside [0, this] ms implies server/client wall-clock skew (cross-host, unsynced).
+# Fall back to relative jitter then; absolute latency is only valid same-host / NTP-synced.
+_LATENCY_SANE_MAX_MS = 10_000.0
 
 
 class GRPCFollower(Robot):
@@ -59,10 +73,10 @@ class GRPCFollower(Robot):
         self.data_timeout_s = config.data_timeout_s
 
         # Optional telemetry hook (see utils.py): records bytes + end-to-end
-        # latency per feature and SendAction RTT. `_stats_offset` maps the server's
-        # produce_ts wall clock onto this process's perf_counter; it is anchored
-        # lazily to the first received stamp (relative latency — immune to
-        # server<->client clock skew).
+        # latency per feature and SendAction RTT. `produce_ts` is the server's wall
+        # clock stamped at sample time; latency is computed as an absolute wall-clock
+        # delta (accurate same-host / NTP-synced). `_stats_offset` is only used by the
+        # cross-host skew fallback (relative-to-first-frame jitter).
         if stats is not None:
             self._stats = stats
         elif config.teleop_stats:
@@ -70,6 +84,7 @@ class GRPCFollower(Robot):
         else:
             self._stats = None
         self._stats_offset: float | None = None
+        self._stats_clock_skewed = False
         # Auto-lifecycle monitor (config flag): started on connect(), prints the
         # session summary on disconnect(). If the caller passed `stats=` they own
         # the monitor (see examples/teleop_monitor_demo.py).
@@ -393,31 +408,39 @@ class GRPCFollower(Robot):
         stream because the server always opens with a keyframe.
         """
         decoders: dict[str, H264FrameDecoder] = {}
-        while not self._obs_stop.is_set():
-            try:
-                stream = self.stub.GetObservation(Empty(), timeout=None)
-                decoders.clear()
-                for feat in stream:
+        try:
+            while not self._obs_stop.is_set():
+                try:
+                    stream = self.stub.GetObservation(Empty(), timeout=None)
+                    # Close native decoder contexts before dropping them (P1.1): the server
+                    # always opens with a keyframe, so a fresh decoder per stream is safe.
+                    for dec in decoders.values():
+                        dec.close()
+                    decoders.clear()
+                    for feat in stream:
+                        if self._obs_stop.is_set():
+                            break
+                        self._consume_obs_feature(feat, decoders)
+                except ImportError:
+                    logger.error("H.264 observation stream requires PyAV; install `av` (e.g. via lerobot[dataset]).")
+                    break
+                except grpc.RpcError as e:
                     if self._obs_stop.is_set():
                         break
-                    self._consume_obs_feature(feat, decoders)
-            except ImportError:
-                logger.error("H.264 observation stream requires PyAV; install `av` (e.g. via lerobot[dataset]).")
-                break
-            except grpc.RpcError as e:
-                if self._obs_stop.is_set():
-                    break
-                logger.warning(
-                    f"Observation stream from GRPCFollower at {self.address} interrupted ({e}); reconnecting..."
-                )
-            except Exception:
-                if self._obs_stop.is_set():
-                    break
-                logger.exception(
-                    f"Observation stream from GRPCFollower at {self.address} crashed; reconnecting..."
-                )
-            if not self._obs_stop.is_set():
-                time.sleep(1.0)
+                    logger.warning(
+                        f"Observation stream from GRPCFollower at {self.address} interrupted ({e}); reconnecting..."
+                    )
+                except Exception:
+                    if self._obs_stop.is_set():
+                        break
+                    logger.exception(
+                        f"Observation stream from GRPCFollower at {self.address} crashed; reconnecting..."
+                    )
+                if not self._obs_stop.is_set():
+                    time.sleep(1.0)
+        finally:
+            for dec in decoders.values():
+                dec.close()
 
     def _consume_obs_feature(
         self, feat: device_pb2.OneFeature, decoders: dict[str, H264FrameDecoder]
@@ -441,10 +464,29 @@ class GRPCFollower(Robot):
             stamp = feat.produce_ts.seconds + feat.produce_ts.nanos / 1e9
             latency_ms = None
             if stamp > 0:
-                if self._stats_offset is None:
-                    self._stats_offset = time.perf_counter() - stamp
+                # Absolute end-to-end latency: server wall-clock sample time -> local now.
+                # Accurate when client and server share a clock (same host or NTP-synced).
+                abs_ms = (_wall_now() - stamp) * 1000.0
+                if 0.0 <= abs_ms <= _LATENCY_SANE_MAX_MS:
+                    latency_ms = abs_ms
+                    self._stats_clock_skewed = False
                 else:
-                    latency_ms = (time.perf_counter() - (stamp + self._stats_offset)) * 1000.0
+                    # Cross-host clock skew: fall back to relative-to-first-frame jitter
+                    # (immune to skew) so the monitor still shows a meaningful trend.
+                    # TODO(P1.4c): replace with RTT-based clock-offset estimation
+                    # (server echoes its wall time in SendAction; client EWMA-smooths the
+                    # offset) so cross-host deployments get true absolute latency too.
+                    if self._stats_offset is None:
+                        self._stats_offset = time.perf_counter() - stamp
+                    else:
+                        latency_ms = (time.perf_counter() - (stamp + self._stats_offset)) * 1000.0
+                    if not self._stats_clock_skewed:
+                        self._stats_clock_skewed = True
+                        logger.warning(
+                            "teleop_stats: server/client clock skew detected (produce_ts -> "
+                            "local wall clock out of range); falling back to relative jitter. "
+                            "Absolute latency is accurate only on same-host/NTP-synced setups."
+                        )
             self._stats.record_feature(feat.key, len(feat.data), latency_ms)
 
     @check_if_not_connected
@@ -498,7 +540,7 @@ class GRPCFollower(Robot):
                         f"SendAction rejected while the robot is busy ({e}); retrying "
                         f"({_BUSY_RETRIES - attempts}/{_BUSY_RETRIES})..."
                     )
-                    time.sleep(_BUSY_RETRY_DELAY_S)
+                    time.sleep(_busy_retry_delay(_BUSY_RETRIES - attempts - 1))
         if last_error is not None:
             raise DeviceNotConnectedError(
                 f"Failed to send action to GRPCFollower at {self.address}: {last_error}"

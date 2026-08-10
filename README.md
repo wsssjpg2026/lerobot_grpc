@@ -198,6 +198,15 @@ self-heals on the next refresh). A standalone demo without hardware:
 python examples/teleop_monitor_demo.py --seconds 10 --interval 1.0
 ```
 
+> **Latency accuracy (cross-host):** the `latency` metric is computed as an absolute
+> wall-clock delta from the server's `produce_ts` (stamped at sample time) to local
+> receive time. It is **accurate only when client and server share a clock** — i.e. the
+> same host, or hosts with synced clocks (NTP/PTP). On **cross-host, unsynced** setups the
+> delta can be negative or wildly off; the monitor detects this and **falls back to a
+> relative-to-first-frame jitter** (still labeled `latency` in the table) so the trend
+> stays meaningful, and logs a one-time warning. True absolute latency for cross-host
+> deployments requires RTT-based clock-offset estimation (planned, not yet implemented).
+
 #### One-shot dual-arm teleop — `examples/teleop_so101.py`
 
 No lerobot CLI needed: this script starts **both** gRPC servers in-process

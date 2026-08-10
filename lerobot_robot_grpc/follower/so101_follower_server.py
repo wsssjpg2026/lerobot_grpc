@@ -17,6 +17,8 @@ from .utils import (
     H264FrameEncoder,
     H264_AVAILABLE,
     _now_produce_ts,
+    _ts_from_wall,
+    _wall_now,
     encode_feature,
     load_feature,
 )
@@ -196,17 +198,28 @@ class SO101FollowerServicer(FollowerServicer):
         self._bus_owner: str | None = None
         self._bus_owner_start = 0.0
         self._bus_owner_thread: threading.Thread | None = None
+        # Poisoned flag: once the watchdog detects a stuck bus call, the physical serial
+        # port is in an unrecoverable state (the stuck owner is still blocked in ser.read()).
+        # Force-releasing the lock would let SendAction write to the same handle concurrently
+        # and corrupt the feetech protocol (unsafe robot motion). Instead, mark the bus
+        # poisoned and refuse all further bus calls until a fresh Connect/Disconnect cycle.
+        self._bus_poisoned = False
         threading.Thread(target=self._bus_watchdog, daemon=True, name="grpc-bus-watchdog").start()
 
     def _acquire_bus(self, what: str, timeout: float = 0.0) -> bool:
-        """Bus lock acquire; records the owner so the stuck-call watchdog can
-        dump its stack and force-release the lock. Calibration is excluded: it legitimately
-        holds the lock for the whole manual recording phase.
+        """Bus lock acquire; records the owner so the stuck-call watchdog can dump its
+        stack. Calibration is excluded: it legitimately holds the lock for the whole
+        manual recording phase.
 
-        `timeout > 0` blocks up to `timeout` seconds instead of failing immediately,
-        for callers (SendAction) that can tolerate a short wait behind the observation
-        stream — rejecting at teleop rate would starve the control loop.
+        Refuses immediately while the bus is poisoned (a prior bus call wedged and the
+        serial port is unsafe to touch). `timeout > 0` blocks up to `timeout` seconds
+        instead of failing immediately, for callers (SendAction) that can tolerate a
+        short wait behind the observation stream — rejecting at teleop rate would starve
+        the control loop.
         """
+        if self._bus_poisoned:
+            logger.error(f"Bus is poisoned (a prior call wedged); rejecting '{what}'.")
+            return False
         if timeout > 0:
             if not self._calibration_lock.acquire(blocking=True, timeout=timeout):
                 return False
@@ -220,9 +233,21 @@ class SO101FollowerServicer(FollowerServicer):
         return True
 
     def _release_bus(self) -> None:
-        """Releases the bus lock; safe even if the watchdog already force-released it."""
+        """Releases the bus lock.
+
+        Only the recorded owner thread may release: a stale thread returning from a
+        wedged call must not clear a newer owner's state nor release its lock. With the
+        poisoned-flag design the watchdog never force-releases, so this guard is
+        defense-in-depth against ownership confusion.
+        """
         with self._calibration_state_lock:
             if not self._bus_held:
+                return
+            if threading.current_thread() is not self._bus_owner_thread:
+                logger.warning(
+                    "_release_bus called by a non-owner thread; ignoring to avoid "
+                    "clobbering the current owner's lock state."
+                )
                 return
             self._bus_held = False
             self._bus_owner = None
@@ -230,10 +255,36 @@ class SO101FollowerServicer(FollowerServicer):
             self._bus_owner_thread = None
         self._calibration_lock.release()
 
+    def _reset_bus_lock_state(self) -> None:
+        """Clears poisoned/ownership state and releases the lock so a fresh session can
+        recover after a watchdog trip. Safe to call after the serial port has been closed
+        (disconnect) or reopened (connect): no concurrent I/O is in flight on a fresh port.
+        """
+        with self._calibration_state_lock:
+            was_held = self._bus_held
+            self._bus_poisoned = False
+            self._bus_held = False
+            self._bus_owner = None
+            self._bus_owner_start = 0.0
+            self._bus_owner_thread = None
+        if was_held:
+            try:
+                self._calibration_lock.release()
+            except RuntimeError:
+                pass
+
     def _bus_watchdog(self) -> None:
-        """Force-releases the bus lock when a non-calibration bus call appears stuck, and
+        """Marks the bus poisoned when a non-calibration bus call appears stuck, and
         dumps the stuck thread's stack for diagnosis (scservo_sdk reads can wedge forever
-        if its wall-clock timeouts misbehave, e.g. after an NTP/Windows clock step)."""
+        if its wall-clock timeouts misbehave, e.g. after an NTP/Windows clock step).
+
+        The lock is NOT force-released: the stuck owner is still blocked in the serial
+        read, and releasing the lock would let another caller write to the same pyserial
+        handle concurrently (protocol corruption, unsafe motion). Instead the bus is
+        poisoned and all further bus calls are refused until a fresh Connect/Disconnect
+        recovers. The monotonic-clock + bounded-read patches upstream prevent most wedges;
+        this is the fail-safe that stops the robot rather than sending garbled commands.
+        """
         while True:
             time.sleep(self.bus_call_timeout_s)
             with self._calibration_state_lock:
@@ -241,13 +292,15 @@ class SO101FollowerServicer(FollowerServicer):
                 owner = self._bus_owner
                 start = self._bus_owner_start
                 thread = self._bus_owner_thread
-            if not held or owner == "calibration":
+                poisoned = self._bus_poisoned
+            if not held or owner == "calibration" or poisoned:
                 continue
             if time.monotonic() - start < self.bus_call_timeout_s:
                 continue
             logger.critical(
                 f"Bus call '{owner}' (thread {thread.name!r}) stuck for "
-                f">{self.bus_call_timeout_s:.0f}s; force-releasing the bus lock."
+                f">{self.bus_call_timeout_s:.0f}s; poisoning the bus (refusing further "
+                f"bus calls until a fresh Connect/Disconnect)."
             )
             if thread is not None and thread.ident is not None:
                 for tid, frame in sys._current_frames().items():
@@ -257,16 +310,9 @@ class SO101FollowerServicer(FollowerServicer):
                         )
                         break
             with self._calibration_state_lock:
-                if not self._bus_held or self._bus_owner_start != start:
-                    continue  # the call finished, or a newer one started; leave the lock alone
-                self._bus_held = False
-                self._bus_owner = None
-                self._bus_owner_start = 0.0
-                self._bus_owner_thread = None
-            try:
-                self._calibration_lock.release()
-            except RuntimeError as e:
-                logger.warning(f"Bus watchdog could not release the lock: {e}")
+                if not self._bus_held or self._bus_owner_start != start or self._bus_poisoned:
+                    continue  # the call finished, a newer one started, or already poisoned
+                self._bus_poisoned = True
 
     @staticmethod
     def _camera_encoding_for(key: str, shape: tuple[int, int, int], encoding: str) -> device_pb2.Encoding:
@@ -332,6 +378,7 @@ class SO101FollowerServicer(FollowerServicer):
     def Connect(self, request, context):
         if not self.robot.is_connected:
             self.robot.connect(False)
+        self._reset_bus_lock_state()
         self._calibrate_error = None
         self._abort_stuck_calibration()
         if self.robot.is_calibrated:
@@ -445,6 +492,10 @@ class SO101FollowerServicer(FollowerServicer):
         self._abort_stuck_calibration()
         if self.robot.is_connected:
             self.robot.disconnect()
+        # Reset the bus-lock state so a fresh Connect can recover after a watchdog trip.
+        # disconnect() closed the serial port (unblocking any wedged read), so releasing
+        # the lock here is safe — no concurrent I/O is possible.
+        self._reset_bus_lock_state()
         return Empty()
 
     def GetObservation(self, request, context):
@@ -467,50 +518,71 @@ class SO101FollowerServicer(FollowerServicer):
         min_fps = min(fps_list, default=30)
         period = 1.0 / min(max(min_fps, 1), 60)
 
-        while context.is_active():
-            if not self._acquire_bus("get_observation"):
-                # Calibration owns the bus: idle the stream, clients keep last values.
-                time.sleep(period)
-                continue
-            try:
-                raw_obs = self.robot.get_observation()
-            finally:
-                self._release_bus()
-
-            # Non-H264 features: joints + JPEG/RAW cameras, same encode_feature path as before.
-            non_h264 = {
-                k: v for k, v in raw_obs.items()
-                if obs_feature_info[k].encoding != device_pb2.Encoding.H264
-            }
-            yield from encode_feature(obs_feature_info, non_h264)
-
-            # H264 cameras: one access unit per frame per camera.
-            for key in h264_keys:
-                if key not in raw_obs or key in failed_h264:
+        try:
+            while context.is_active():
+                if not self._acquire_bus("get_observation"):
+                    # Calibration owns the bus: idle the stream, clients keep last values.
+                    time.sleep(period)
                     continue
-                info = obs_feature_info[key]
-                camera_fps = int(getattr(self.robot.config.cameras.get(key), "fps", None) or min_fps)
-                encoder = encoders.get(key)
-                if encoder is None:
-                    encoder = H264FrameEncoder(
-                        key,
-                        info.shape.H,
-                        info.shape.W,
-                        fps=camera_fps,
-                        bitrate_kbps=max(500, 2000 * (info.shape.H * info.shape.W) // (640 * 480)),
-                        keyint_frames=max(30, camera_fps * 2),
-                    )
-                    encoders[key] = encoder
+                # Sample-time stamping (P1.2-B): get_observation() reads motors first, then
+                # peeks camera buffers. Capture wall-clock before/after to stamp each feature
+                # at its approximate sample time (motor ~t_motor, camera ~t_cam) instead of a
+                # single encode time — so downstream data collection/inference can tell motor
+                # and camera samples apart. Approximate (no lock split); precise per-phase
+                # stamping is deferred with the bus-lock split (P1.2-A, not in this PR).
+                t_motor = _wall_now()
                 try:
-                    units = encoder.encode(raw_obs[key])
-                except Exception:
-                    logger.exception(f"H264 encoding failed for camera '{key}'; dropping it from the stream.")
-                    failed_h264.add(key)
-                    continue
-                for unit in units:
-                    yield device_pb2.OneFeature(key=key, data=unit, produce_ts=_now_produce_ts())
+                    raw_obs = self.robot.get_observation()
+                finally:
+                    self._release_bus()
+                t_cam = _wall_now()
 
-            time.sleep(period)
+                ts_for_key: dict[str, device_pb2.Timestamp] = {}
+                for k, info in obs_feature_info.items():
+                    if k not in raw_obs:
+                        continue
+                    is_scalar = (info.shape.H, info.shape.W, info.shape.C) == (1, 1, 1)
+                    ts_for_key[k] = _ts_from_wall(t_motor if is_scalar else t_cam)
+
+                # Non-H264 features: joints + JPEG/RAW cameras, same encode_feature path as before.
+                non_h264 = {
+                    k: v for k, v in raw_obs.items()
+                    if obs_feature_info[k].encoding != device_pb2.Encoding.H264
+                }
+                yield from encode_feature(obs_feature_info, non_h264, ts_for_key=ts_for_key)
+
+                # H264 cameras: one access unit per frame per camera.
+                for key in h264_keys:
+                    if key not in raw_obs or key in failed_h264:
+                        continue
+                    info = obs_feature_info[key]
+                    camera_fps = int(getattr(self.robot.config.cameras.get(key), "fps", None) or min_fps)
+                    encoder = encoders.get(key)
+                    if encoder is None:
+                        encoder = H264FrameEncoder(
+                            key,
+                            info.shape.H,
+                            info.shape.W,
+                            fps=camera_fps,
+                            bitrate_kbps=max(500, 2000 * (info.shape.H * info.shape.W) // (640 * 480)),
+                            keyint_frames=max(30, camera_fps * 2),
+                        )
+                        encoders[key] = encoder
+                    try:
+                        units = encoder.encode(raw_obs[key])
+                    except Exception:
+                        logger.exception(f"H264 encoding failed for camera '{key}'; dropping it from the stream.")
+                        failed_h264.add(key)
+                        continue
+                    cam_ts = ts_for_key.get(key, _now_produce_ts())
+                    for unit in units:
+                        yield device_pb2.OneFeature(key=key, data=unit, produce_ts=cam_ts)
+
+                time.sleep(period)
+        finally:
+            # Release native PyAV encoder contexts when the stream ends/cancels (P1.1).
+            for enc in encoders.values():
+                enc.close()
 
     def SendAction(self, request, context):
         act_dict: RobotAction = {}
