@@ -22,14 +22,19 @@ client = [
     "lerobot[hardware]>=0.6.1,<0.7",
     "lerobot[viz]>=0.6.1,<0.7",
 ]
-# Server-side: wraps real SO101 hardware
+# Server-side: wraps real SO101 hardware (+ av for H.264 camera streaming)
 server = [
     "lerobot[feetech]>=0.6.1,<0.7",
+    "av>=15,<16",
 ]
 # Everything (client + server on same machine, typical dev setup)
 all = [
     "lerobot_robot_grpc[client]",
     "lerobot_robot_grpc[server]",
+]
+# Development: testing only (install on top of [all] or [server])
+dev = [
+    "pytest>=8",
 ]
 
 [tool.setuptools.packages.find]

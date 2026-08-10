@@ -116,7 +116,7 @@ class YourRobotFollowerServicer(FollowerServicer):
     def GetStatus(self, request, context): ...
 ```
 
-The easiest path: **copy `so101_follower_server.py` verbatim**, then swap the
+The easiest path: **copy `follower/so101_follower_server.py` verbatim**, then swap the
 wrapped class and the bits that are SO-101-specific (the calibration thread,
 `_calibrate_done` event). The `_encode_feature_info` helper and the
 `encode_feature` / `load_feature` round-trip are reusable as-is.
@@ -214,9 +214,17 @@ own procedure. Three common shapes:
 
 - **Manual range-of-motion recording** (SO-101, feeble servos): `Calibrate` starts a
   background thread that records min/max per joint until the client sends
-  `CalibrateDone`. See `so101_follower_server.py` — including the `_calibrate_done`
+  `CalibrateDone`. See `follower/so101_follower_server.py` — including the `_calibrate_done`
   `threading.Event` and the non-blocking `_calibration_lock` that rejects
   observation/action access while moving.
+
+> **Bus-lock robustness** (both SO-101 servers): a `bus_call_timeout_s` watchdog
+> force-releases the lock (and dumps the stuck thread's stack) when a non-calibration
+> bus call appears wedged — e.g. a dead serial port, or a feetech SDK packet timeout
+> suppressed by a wall-clock step (the servers patch the port handler to monotonic
+> time, and bound `readPort` so a garbage serial stream can't hold the lock forever).
+> The gRPC clients likewise retry `SendAction`/`GetAction` briefly while the robot is
+> busy instead of failing the teleop loop. New servers may copy these patterns.
 - **Absolute encoders / no calibration needed** (most humanoids): `Calibrate` just
   returns `CalibrationStatus.CALIBRATED`.
 - **Define an origin** (VR leaders): not joint calibration at all — `SetReference`

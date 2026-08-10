@@ -11,4 +11,12 @@ venv/
 .mypy_cache/
 .ruff_cache/
 .DS_Store
+
+.vscode/
+
+# Example/test runtime artifacts (e.g. lerobot-record dataset output in examples/)
+examples/so101_grpc_test_*/
+
+# Example/test runtime outputs (e.g. captured images from camera demos)
+outputs/
 .qwen/

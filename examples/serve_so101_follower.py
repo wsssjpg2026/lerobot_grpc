@@ -28,6 +28,13 @@ For RealSense, set ``type: realsense`` (requires ``lerobot[realsense]`` installe
 
 The arm connects on first client Connect RPC. Calibration via
 Calibrate/CalibrateDone RPCs (use lerobot-calibrate --robot.type=grpc_follower ...).
+
+`--camera_encoding` selects the camera wire format:
+  - h264  (default): inter-frame H.264; the server keeps a per-stream encoder and
+    the client keeps a per-camera decoder, so P-frames compress across snapshots.
+    Requires `av` (PyAV) on both sides.
+  - jpeg: per-frame JPEG, backward compatible with the original protocol behavior.
+Depth maps ('<cam>_depth') are always RAW regardless of this flag.
 """
 import logging
 import time
@@ -48,6 +55,7 @@ from lerobot_robot_grpc.follower.so101_follower_server import (
 class ServeFollowerConfig:
     robot: SOFollowerRobotConfig
     address: str = "0.0.0.0:5555"
+    camera_encoding: str = "h264"  # "h264" (inter-frame) or "jpeg" (per-frame)
 
 
 @parser.wrap()
@@ -55,13 +63,13 @@ def main(cfg: ServeFollowerConfig):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", force=True)
 
     robot = SO101FollowerAdapted(cfg.robot)
-    servicer = SO101FollowerServicer(robot)
+    servicer = SO101FollowerServicer(robot, camera_encoding=cfg.camera_encoding)
     server = FollowerServer(FollowerServerConfig(address=cfg.address), servicer)
     server.start()
     cam_names = list(cfg.robot.cameras.keys())
     logging.info(
-        "SO-101 follower server ready: address=%s serial=%s id=%s cameras=%s",
-        cfg.address, cfg.robot.port, cfg.robot.id, cam_names,
+        "SO-101 follower server ready: address=%s serial=%s id=%s cameras=%s camera_encoding=%s",
+        cfg.address, cfg.robot.port, cfg.robot.id, cam_names, cfg.camera_encoding,
     )
     try:
         while True:

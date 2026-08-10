@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import threading
 import time
 from typing import TYPE_CHECKING, Any
@@ -29,6 +30,18 @@ else:
     device_pb2_grpc = None
 
 logger = logging.getLogger(__name__)
+
+# The server rejects GetAction while the bus is busy (real calibration, or a just-released
+# stuck bus call). Retry briefly instead of crashing the teleop loop on a transient busy.
+_BUSY_RETRIES = 5
+
+
+def _busy_retry_delay(attempt: int) -> float:
+    """Exponential backoff + jitter for transient busy retries: ~0.2s, 0.4, 0.8, capped at
+    1.0s, plus up to 100ms jitter. The previous fixed 1.0s blocked the teleop loop for up to
+    5s on a transient busy; this bounds it to ~2.5s and spreads retries to avoid thundering."""
+    base = min(1.0, 0.2 * (2 ** attempt))
+    return base + random.uniform(0.0, 0.1)
 
 
 class GRPCLeader(Teleoperator):
@@ -348,15 +361,31 @@ class GRPCLeader(Teleoperator):
 
     @check_if_not_connected
     def get_action(self) -> RobotAction:
-        received_keys: set[str] = set()
-        try:
-            for act in self.stub.GetAction(Empty(), timeout=self.data_timeout_s):
-                load_feature(act, self._act_ft_info, self._latest_act_ft)
-                received_keys.add(act.key)
-        except grpc.RpcError as e:
+        attempts = _BUSY_RETRIES
+        last_error: grpc.RpcError | None = None
+        while attempts > 0:
+            attempts -= 1
+            received_keys: set[str] = set()
+            try:
+                for act in self.stub.GetAction(Empty(), timeout=self.data_timeout_s):
+                    load_feature(act, self._act_ft_info, self._latest_act_ft)
+                    received_keys.add(act.key)
+                last_error = None
+                break
+            except grpc.RpcError as e:
+                last_error = e
+                if "calibrating" not in str(e):
+                    break  # not a transient busy rejection; surface immediately
+                if attempts > 0:
+                    logger.warning(
+                        f"GetAction rejected while the robot is busy ({e}); retrying "
+                        f"({_BUSY_RETRIES - attempts}/{_BUSY_RETRIES})..."
+                    )
+                    time.sleep(_busy_retry_delay(_BUSY_RETRIES - attempts - 1))
+        if last_error is not None:
             raise DeviceNotConnectedError(
-                f"Failed to receive action from GRPCLeader at {self.address}: {e}"
-            ) from e
+                f"Failed to receive action from GRPCLeader at {self.address}: {last_error}"
+            ) from last_error
         if not received_keys:
             raise DeviceNotConnectedError("No action received from GRPCLeader.")
         missing_critical = {

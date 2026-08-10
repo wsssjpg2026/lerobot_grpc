@@ -11,7 +11,7 @@ The repository is named `lerobot_grpc`; the installable distribution / import pa
 | `grpc_follower` | `lerobot.robots.robot.Robot` | gRPC **client** on the recording/training machine, talking to a remote follower |
 | `grpc_leader`   | `lerobot.teleoperators.teleoperator.Teleoperator` | gRPC **client** for a remote leader (teleop) |
 
-Plus the **server** side that wraps real SO101 hardware and serves it over gRPC (`so101_follower_server`, `so101_leader_server`).
+Plus the **server** side that wraps real SO101 hardware and serves it over gRPC (`follower/so101_follower_server.py`, `leader/so101_leader_server.py`).
 
 ## Install
 
@@ -54,6 +54,42 @@ pip install -e ".[server]"
 - **Video encoding**: `torchcodec` may show a DLL loading warning on Windows if FFmpeg shared libraries are missing. This is harmless — lerobot automatically falls back to `pyav` for video encoding.
 - **rerun visualization**: `rerun-sdk` (from `lerobot[viz]`) provides real-time data visualization during recording (`--display_data=true`).
 
+## Development
+
+### Running tests
+
+Install the dev extra on top of your normal environment, then run pytest:
+
+```bash
+pip install -e ".[dev]"
+pytest tests/
+```
+
+Current tests cover the leader server's bus-lock safety mechanism (`_acquire_bus` / `_release_bus` / `_bus_watchdog` / `_reset_bus_lock_state`).
+
+## Video streaming (H.264)
+
+Cameras are streamed over the existing `GetObservation` RPC (no extra RPC needed).
+The server keeps a per-stream H.264 encoder and the client a per-camera decoder,
+so P-frames compress across snapshots instead of shipping a standalone JPEG per
+frame (order-of-magnitude bandwidth reduction for static scenes). Wire details:
+
+- One `OneFeature` message = one H.264 access unit (Annex-B, SPS/PPS embedded in
+  every keyframe); a fresh decoder can sync at any keyframe.
+- The server opens every stream with a keyframe and inserts one every ~2 s
+  (`keyint`); if the connection drops, the client reconnects and resyncs.
+- The client keeps a **persistent** `GetObservation` stream open in a background
+  thread; `get_observation()` returns the latest frame. Servers from this repo
+  behave the same way (streams until the client disconnects).
+- `GetObservation` is now one continuous call per client — per-call "poll" style
+  clients (from older versions of this repo) will time out against new servers.
+  Upgrade client + server together.
+- Depth maps (`<cam>_depth`) stay RAW; `--camera_encoding=jpeg` on
+  `serve_so101_follower.py` restores per-frame JPEG for all cameras.
+- Requires PyAV (`av`, from `lerobot[dataset]` / `lerobot[feetech]`+`av`); if it's
+  missing the server falls back to JPEG automatically, and the client errors out
+  clearly when an H.264 feature arrives.
+
 ## Quick reference — gRPC device parameters
 
 Both `grpc_follower` and `grpc_leader` accept these config parameters via CLI flags:
@@ -66,6 +102,8 @@ Both `grpc_follower` and `grpc_leader` accept these config parameters via CLI fl
 | `--robot.need_warmup` | `true` | Verify feature schema on connect |
 | `--robot.connect_timeout_s` | `5.0` | gRPC connect timeout |
 | `--robot.data_timeout_s` | `5.0` | gRPC data (observation/action) timeout |
+| `--robot.teleop_stats` | `false` | Live bandwidth/latency monitor + end-of-session summary (follower only) |
+| `--robot.stats_interval_s` | `1.0` | Monitor refresh interval (s) |
 
 ## Usage
 
@@ -83,6 +121,10 @@ python examples/serve_so101_follower.py `
     --robot.cameras="{top: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}}" `
     --address=0.0.0.0:5555
 ```
+
+> 相机参数是 draccus 的整体字典字符串（内联 YAML/JSON 均可，`JSON ⊆ YAML`），不能拆成 `--robot.cameras.top.type=...` 扁平键。
+> Windows PowerShell 5.1 会把调用外部程序时参数内嵌的 `"` 剥掉，但 YAML 写法不需要字面引号，双引号包裹整段值即可（`{...}` 在引号内是普通字符）。
+> 相机名可任取（示例用 `top`）；配置必须有 `type`（如 `opencv`）及 lerobot 要求的 `width`/`height`/`fps`。
 
 ```powershell
 # Terminal 2 — Leader server (SO101 leader arm on COM4)
@@ -144,6 +186,58 @@ lerobot-teleoperate `
 
 - `--teleop_time_s=60` — run for 60 seconds (omit for unlimited until Ctrl+C).
 - `--display_data=true` — open a **rerun** viewer showing joint positions in real time.
+
+To watch bandwidth/latency live and get a session summary when it ends, add
+`--robot.teleop_stats=true` (no code changes — the flag works with any lerobot
+CLI that instantiates the follower):
+
+```powershell
+lerobot-teleoperate `
+    --robot.type=grpc_follower --robot.address=127.0.0.1:5555 --robot.id=follower `
+    --teleop.type=grpc_leader  --teleop.address=127.0.0.1:5556 --teleop.id=leader `
+    --teleop_time_s=60 `
+    --robot.teleop_stats=true --robot.stats_interval_s=1.0
+```
+
+Live output is a multi-line block repainted in place (header + per-feature
+Mbps/fps, latency avg/p95/max, action RTT) — same mechanism as the calibration
+pos table, so nothing scrolls; on disconnect it prints a full per-feature
+summary table. It composes with lerobot's own in-place displays: with
+`--display_data=true` the stats block stacks above lerobot's NORM table and
+both repaint in place (any one-off interleave from the concurrent writers
+self-heals on the next refresh). A standalone demo without hardware:
+
+```powershell
+python examples/teleop_monitor_demo.py --seconds 10 --interval 1.0
+```
+
+> **Latency accuracy (cross-host):** the `latency` metric is computed as an absolute
+> wall-clock delta from the server's `produce_ts` (stamped at sample time) to local
+> receive time. It is **accurate only when client and server share a clock** — i.e. the
+> same host, or hosts with synced clocks (NTP/PTP). On **cross-host, unsynced** setups the
+> delta can be negative or wildly off; the monitor detects this and **falls back to a
+> relative-to-first-frame jitter** (still labeled `latency` in the table) so the trend
+> stays meaningful, and logs a one-time warning. True absolute latency for cross-host
+> deployments requires RTT-based clock-offset estimation (planned, not yet implemented).
+
+#### One-shot dual-arm teleop — `examples/teleop_so101.py`
+
+No lerobot CLI needed: this script starts **both** gRPC servers in-process
+(follower arm on `--follower-port`, leader arm on `--leader-port`), connects the
+`GRPCFollower` / `GRPCLeader` clients, and streams leader joint actions to the
+follower at `--rate` Hz until Ctrl+C (or `--time` seconds):
+
+```powershell
+python examples/teleop_so101.py `
+    --follower-port=COM5 --leader-port=COM7 `
+    --cameras="{top: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}}" `
+    --teleop-stats --time 60
+```
+
+`--cameras` is the same inline-YAML dict as `serve_so101_follower.py`
+(omit for a bare joint-only teleop); `--teleop-stats` adds the live
+bandwidth/latency monitor + end-of-session summary; arms auto-calibrate on
+connect (move them through their full range when prompted, or pass `--no-calibrate`).
 
 ### 4. Record a dataset — `lerobot-record`
 
