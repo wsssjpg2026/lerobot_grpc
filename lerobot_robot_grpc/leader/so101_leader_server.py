@@ -201,6 +201,9 @@ class SO101LeaderServicer(LeaderServicer):
             self.robot.connect(False)
         self._calibrate_error = None
         self._abort_stuck_calibration()
+        # Reset reference on new connection — previous session's SetReference
+        # would otherwise make get_action() return deltas indefinitely.
+        self.robot.reference_action = None
         if self.robot.is_calibrated:
             return device_pb2.CalibrationInfo(status=device_pb2.CalibrationStatus.CALIBRATED)
         else:
