@@ -54,6 +54,19 @@ pip install -e ".[server]"
 - **Video encoding**: `torchcodec` may show a DLL loading warning on Windows if FFmpeg shared libraries are missing. This is harmless — lerobot automatically falls back to `pyav` for video encoding.
 - **rerun visualization**: `rerun-sdk` (from `lerobot[viz]`) provides real-time data visualization during recording (`--display_data=true`).
 
+## Development
+
+### Running tests
+
+Install the dev extra on top of your normal environment, then run pytest:
+
+```bash
+pip install -e ".[dev]"
+pytest tests/
+```
+
+Current tests cover the leader server's bus-lock safety mechanism (`_acquire_bus` / `_release_bus` / `_bus_watchdog` / `_reset_bus_lock_state`).
+
 ## Video streaming (H.264)
 
 Cameras are streamed over the existing `GetObservation` RPC (no extra RPC needed).

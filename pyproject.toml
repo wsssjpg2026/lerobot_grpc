@@ -32,6 +32,10 @@ all = [
     "lerobot_robot_grpc[client]",
     "lerobot_robot_grpc[server]",
 ]
+# Development: testing only (install on top of [all] or [server])
+dev = [
+    "pytest>=8",
+]
 
 [tool.setuptools.packages.find]
 include = ["lerobot_robot_grpc*"]

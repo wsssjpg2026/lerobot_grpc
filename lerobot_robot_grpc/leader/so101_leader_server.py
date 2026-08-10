@@ -184,18 +184,31 @@ class SO101LeaderServicer(LeaderServicer):
         self.calibration_timeout_s = calibration_timeout_s
         # Bus-call watchdog: a stuck low-level bus call (e.g. a dead serial port, or a clock
         # regression in the feetech SDK timeouts) would otherwise hold the lock forever; after
-        # bus_call_timeout_s the watchdog force-releases it and dumps the stuck thread's stack.
+        # bus_call_timeout_s the watchdog marks the bus poisoned and dumps the stuck thread's stack.
         self.bus_call_timeout_s = bus_call_timeout_s
         self._bus_held = False
         self._bus_owner: str | None = None
         self._bus_owner_start = 0.0
         self._bus_owner_thread: threading.Thread | None = None
+        # Poisoned flag: once the watchdog detects a stuck bus call, the physical serial
+        # port is in an unrecoverable state (the stuck owner is still blocked in ser.read()).
+        # Force-releasing the lock would let GetAction/SendFeedback write to the same handle
+        # concurrently and corrupt the feetech protocol (unsafe robot motion). Instead, mark
+        # the bus poisoned and refuse all further bus calls until a fresh Connect/Disconnect.
+        self._bus_poisoned = False
         threading.Thread(target=self._bus_watchdog, daemon=True, name="grpc-bus-watchdog").start()
 
     def _acquire_bus(self, what: str) -> bool:
         """Non-blocking bus lock acquire; records the owner so the stuck-call watchdog can
-        dump its stack and force-release the lock. Calibration is excluded: it legitimately
-        holds the lock for the whole manual recording phase."""
+        dump its stack. Calibration is excluded: it legitimately holds the lock for the whole
+        manual recording phase.
+
+        Refuses immediately while the bus is poisoned (a prior bus call wedged and the
+        serial port is unsafe to touch).
+        """
+        if self._bus_poisoned:
+            logger.error(f"Bus is poisoned (a prior call wedged); rejecting '{what}'.")
+            return False
         if not self._calibration_lock.acquire(blocking=False):
             return False
         with self._calibration_state_lock:
@@ -206,9 +219,19 @@ class SO101LeaderServicer(LeaderServicer):
         return True
 
     def _release_bus(self) -> None:
-        """Releases the bus lock; safe even if the watchdog already force-released it."""
+        """Releases the bus lock.
+
+        Only the recorded owner thread may release: a stale thread returning from a
+        wedged call must not clear a newer owner's state nor release its lock.
+        """
         with self._calibration_state_lock:
             if not self._bus_held:
+                return
+            if threading.current_thread() is not self._bus_owner_thread:
+                logger.warning(
+                    "_release_bus called by a non-owner thread; ignoring to avoid "
+                    "clobbering the current owner's lock state."
+                )
                 return
             self._bus_held = False
             self._bus_owner = None
@@ -216,10 +239,36 @@ class SO101LeaderServicer(LeaderServicer):
             self._bus_owner_thread = None
         self._calibration_lock.release()
 
+    def _reset_bus_lock_state(self) -> None:
+        """Clears poisoned/ownership state and releases the lock so a fresh session can
+        recover after a watchdog trip. Safe to call after the serial port has been closed
+        (disconnect) or reopened (connect): no concurrent I/O is in flight on a fresh port.
+        """
+        with self._calibration_state_lock:
+            was_held = self._bus_held
+            self._bus_poisoned = False
+            self._bus_held = False
+            self._bus_owner = None
+            self._bus_owner_start = 0.0
+            self._bus_owner_thread = None
+        if was_held:
+            try:
+                self._calibration_lock.release()
+            except RuntimeError:
+                pass
+
     def _bus_watchdog(self) -> None:
-        """Force-releases the bus lock when a non-calibration bus call appears stuck, and
+        """Marks the bus poisoned when a non-calibration bus call appears stuck, and
         dumps the stuck thread's stack for diagnosis (scservo_sdk reads can wedge forever
-        if its wall-clock timeouts misbehave, e.g. after an NTP/Windows clock step)."""
+        if its wall-clock timeouts misbehave, e.g. after an NTP/Windows clock step).
+
+        The lock is NOT force-released: the stuck owner is still blocked in the serial
+        read, and releasing the lock would let another caller write to the same pyserial
+        handle concurrently (protocol corruption, unsafe motion). Instead the bus is
+        poisoned and all further bus calls are refused until a fresh Connect/Disconnect
+        recovers. The monotonic-clock + bounded-read patches upstream prevent most wedges;
+        this is the fail-safe that stops the robot rather than sending garbled commands.
+        """
         while True:
             time.sleep(self.bus_call_timeout_s)
             with self._calibration_state_lock:
@@ -227,13 +276,15 @@ class SO101LeaderServicer(LeaderServicer):
                 owner = self._bus_owner
                 start = self._bus_owner_start
                 thread = self._bus_owner_thread
-            if not held or owner == "calibration":
+                poisoned = self._bus_poisoned
+            if not held or owner == "calibration" or poisoned:
                 continue
             if time.monotonic() - start < self.bus_call_timeout_s:
                 continue
             logger.critical(
                 f"Bus call '{owner}' (thread {thread.name!r}) stuck for "
-                f">{self.bus_call_timeout_s:.0f}s; force-releasing the bus lock."
+                f">{self.bus_call_timeout_s:.0f}s; poisoning the bus (refusing further "
+                f"bus calls until a fresh Connect/Disconnect)."
             )
             if thread is not None and thread.ident is not None:
                 for tid, frame in sys._current_frames().items():
@@ -243,16 +294,9 @@ class SO101LeaderServicer(LeaderServicer):
                         )
                         break
             with self._calibration_state_lock:
-                if not self._bus_held or self._bus_owner_start != start:
-                    continue  # the call finished, or a newer one started; leave the lock alone
-                self._bus_held = False
-                self._bus_owner = None
-                self._bus_owner_start = 0.0
-                self._bus_owner_thread = None
-            try:
-                self._calibration_lock.release()
-            except RuntimeError as e:
-                logger.warning(f"Bus watchdog could not release the lock: {e}")
+                if not self._bus_held or self._bus_owner_start != start or self._bus_poisoned:
+                    continue  # the call finished, a newer one started, or already poisoned
+                self._bus_poisoned = True
 
     @staticmethod
     def _encode_feature_info(feature_info: dict[str, Any]) -> dict[str, device_pb2.OneFeatureInfo]:
@@ -300,6 +344,7 @@ class SO101LeaderServicer(LeaderServicer):
             self.robot.connect(False)
         self._calibrate_error = None
         self._abort_stuck_calibration()
+        self._reset_bus_lock_state()
         # Reset reference on new connection — previous session's SetReference
         # would otherwise make get_action() return deltas indefinitely.
         self.robot.reference_action = None
@@ -414,6 +459,7 @@ class SO101LeaderServicer(LeaderServicer):
         self._abort_stuck_calibration()
         if self.robot.is_connected:
             self.robot.disconnect()
+        self._reset_bus_lock_state()
         return Empty()
 
     def GetObservation(self, request, context):
