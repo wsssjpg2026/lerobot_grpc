@@ -226,8 +226,8 @@ class MuJoCoSO101Servicer(FollowerServicer):
 
         Pipeline: FK(current joints) → compose delta → IK → joint targets.
         Uses body-frame rotation composition (``R_current @ R_delta``), matching
-        ``robot_kinematic_processor.EEReferenceAndDelta``.  The composition order
-        will be revisited when wayfinder #05 (coordinate frame alignment) resolves.
+        ``robot_kinematic_processor.EEReferenceAndDelta`` — confirmed correct by
+        wayfinder #05 (coordinate frame alignment resolution).
         """
         from lerobot.utils.rotation import Rotation as R
 
