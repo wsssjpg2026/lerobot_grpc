@@ -27,6 +27,14 @@ server = [
     "lerobot[feetech]>=0.6.1,<0.7",
     "av>=15,<16",
 ]
+# MuJoCo simulation backend (no hardware needed)
+sim = [
+    "mujoco>=3.1,<4",
+]
+# Kinematics (FK/IK via placo, for pose_delta action mode)
+kinematics = [
+    "lerobot[kinematics]>=0.6.1,<0.7",
+]
 # Everything (client + server on same machine, typical dev setup)
 all = [
     "lerobot_robot_grpc[client]",
