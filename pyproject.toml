@@ -35,6 +35,10 @@ sim = [
 kinematics = [
     "lerobot[kinematics]>=0.6.1,<0.7",
 ]
+# Pika Sense leader (Vive Tracker + gripper sensor)
+pika = [
+    "agx-pypika>=0.1.1",
+]
 # Everything (client + server on same machine, typical dev setup)
 all = [
     "lerobot_robot_grpc[client]",
