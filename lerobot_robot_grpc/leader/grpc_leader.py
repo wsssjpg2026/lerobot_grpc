@@ -262,7 +262,15 @@ class GRPCLeader(Teleoperator):
 
     def _calibrate_once(self, only_one_attempt: bool = False) -> None:
         logger.warning(f"GRPCLeader at {self.address} needs calibration.")
-        print("Starting calibration process... (move joints through full range, then press Enter)")
+        # Clear screen so each step starts fresh (multi-step calibration
+        # recurses through _calibrate_once; leftover lines garble the
+        # move_cursor_up refresh).
+        print("\033[2J\033[H", end="", flush=True)
+        print("Follow the calibration instructions below, then press Enter when ready.")
+        # Drain any buffered Enter presses from the inter-step delay so
+        # they don't auto-advance this step before the user is ready.
+        while enter_pressed():
+            pass
 
         latest: dict[str, Any] = {"frame": None}
         stop = threading.Event()

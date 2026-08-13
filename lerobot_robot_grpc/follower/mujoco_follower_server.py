@@ -54,6 +54,11 @@ DEFAULT_GRIPPER_MAX_DISTANCE_MM: float = 60.0
 # Physics step period (seconds) — 50 Hz matches the real SO101 observation rate.
 _PHYSICS_PERIOD_S: float = 1.0 / 50.0
 
+# Home joint angles (degrees) for the 5 body joints.  Bent elbow avoids the
+# full-extension singularity; the arm starts inside the workspace with room to
+# move in every direction.  Gripper stays at its MuJoCo default (near-closed).
+HOME_JOINTS_DEG: tuple[float, ...] = (0.0, -20.0, 60.0, -40.0, 0.0)
+
 
 def _scalar_feature_info(key: str) -> device_pb2.OneFeatureInfo:
     """Builds a CRITICAL FLOAT32 scalar feature info for *key*.
@@ -115,8 +120,15 @@ class MuJoCoSO101Servicer(FollowerServicer):
         urdf_path: str | None = None,
         action_mode: str = "pose_delta",
         render: bool = False,
-        orientation_weight: float = 0.01,
+        rot_weight: float = 0.3,
         gripper_max_distance_mm: float = DEFAULT_GRIPPER_MAX_DISTANCE_MM,
+        home_joints_deg: tuple[float, ...] = HOME_JOINTS_DEG,
+        ctrl_smoothing_alpha: float = 0.20,
+        position_deadband_m: float = 0.001,
+        rotation_deadband_rad: float = 0.005,
+        workspace_radius_m: float = 0.015,  # 15mm/step — safety: prevents high-speed drift
+        translation_rot_weight: float = 0.0,
+        rotation_significant_rad: float = 0.009,
     ):
         if action_mode not in ("joint", "pose_delta"):
             raise ValueError(
@@ -133,6 +145,28 @@ class MuJoCoSO101Servicer(FollowerServicer):
         self._lock = threading.Lock()
         self._connected = False
         self._latest_action: dict[str, float] = {}
+        # Accumulated target EE pose (4×4).  Deltas compose onto *this*, not onto
+        # FK(actual qpos), so +Δ followed by −Δ always cancels regardless of PD
+        # convergence lag.  Lazily synced from the current joints on first
+        # SendAction (or after a reconnect that calls mj_resetData).
+        self._target_pose: np.ndarray | None = None
+        # Previous IK solution (raw, pre-EMA) — used as the DLS seed so the
+        # solver converges from a stable neighbourhood instead of the
+        # PD-lagged, ringing actual qpos (which creates a self-excited limit
+        # cycle).  Mirrors galbot's ``self.cur_lj = np.array(jl)`` pattern.
+        self._last_ik_rad: np.ndarray | None = None
+        # Desired ctrl targets (radians, len(JOINTS)).  Set by SendAction;
+        # GetObservation blends ``data.ctrl`` toward this at 50 Hz so motion
+        # is continuous between actions (no "jolt-then-freeze" at low action
+        # rates).  None until first Connect.
+        self._target_ctrl: np.ndarray | None = None
+        # Last IK joint_action dict (degrees + gripper %) — reused on deadband
+        # so the arm holds its body-joint targets while the gripper still
+        # updates independently.
+        self._last_joint_action: dict[str, float] | None = None
+        # DLS IK solver (pose_delta only).  Uses MuJoCo's native Jacobian via
+        # the 'gripperframe' site — no external IK library needed.
+        self._ik_solver = None
 
         # --- Feature schemas ------------------------------------------------
         self._obs_ft_info: dict[str, device_pb2.OneFeatureInfo] = {
@@ -148,21 +182,31 @@ class MuJoCoSO101Servicer(FollowerServicer):
             }
 
         # --- IK (pose_delta only) -------------------------------------------
-        # IK is seeded from current MuJoCo joint angles each frame — the arm is
-        # already near the target (per-frame deltas are small), so this converges
-        # fast.  Equivalent to InverseKinematicsEEToJoints(initial_guess_current_joints=True).
-        self._kin = None
-        self._orientation_weight = orientation_weight
+        # Damped Least Squares solver using MuJoCo's native Jacobian.  Numerically
+        # stable near singularities (damping term), and rot_weight balances
+        # position vs orientation tracking in a single solve — no wrist bypass
+        # or FK compensation needed.  Inspired by the reference Pika→JAKA impl.
         self._gripper_max_distance_mm = gripper_max_distance_mm
+        self._home_joints_deg = home_joints_deg
+        self._ctrl_smoothing_alpha = ctrl_smoothing_alpha
+        self._position_deadband_m = position_deadband_m
+        self._rotation_deadband_rad = rotation_deadband_rad
+        self._workspace_radius_m = workspace_radius_m
+        # Adaptive rot_weight: for pure translations (rotation delta below
+        # this threshold) the DLS uses translation_rot_weight instead of the
+        # normal rot_weight.  This lets shoulder_pan — the only Z-axis joint
+        # — rotate freely to achieve lateral (Y) motion, accepting some yaw
+        # drift (the 5-DOF kinematic coupling the user has accepted).
+        self._translation_rot_weight = translation_rot_weight
+        self._rotation_significant_rad = rotation_significant_rad
         if action_mode == "pose_delta":
-            if urdf_path is None:
-                raise ValueError("urdf_path is required for pose_delta action mode")
-            from lerobot.model.kinematics import RobotKinematics
+            from .dls_ik import DLSIKSolver
 
-            self._kin = RobotKinematics(
-                str(urdf_path),
-                target_frame_name="gripper_frame_link",
-                joint_names=list(BODY_JOINTS),
+            self._ik_solver = DLSIKSolver(
+                self._model,
+                site_name="gripperframe",
+                body_dofs=list(range(len(BODY_JOINTS))),
+                rot_weight=rot_weight,
             )
 
         # --- Optional viewer ------------------------------------------------
@@ -173,11 +217,10 @@ class MuJoCoSO101Servicer(FollowerServicer):
             self._viewer = mujoco.viewer.launch_passive(self._model, self._data)
 
         logger.info(
-            "MuJoCoSO101Servicer ready: action_mode=%s xml=%s urdf=%s render=%s",
-            action_mode,
-            xml_path,
-            urdf_path,
-            render,
+            "MuJoCoSO101Servicer ready: action_mode=%s xml=%s render=%s rot_weight=%s "
+            "ctrl_smoothing_alpha=%s deadband=%.1fmm workspace_radius=%.0fmm",
+            action_mode, xml_path, render, rot_weight,
+            ctrl_smoothing_alpha, position_deadband_m * 1000, workspace_radius_m * 1000,
         )
 
     # ------------------------------------------------------------------
@@ -206,13 +249,6 @@ class MuJoCoSO101Servicer(FollowerServicer):
                 obs[f"{joint}.pos"] = math.degrees(rad)
         return obs
 
-    def _get_body_joint_degrees(self) -> np.ndarray:
-        """Current body-joint angles in degrees (input to FK/IK)."""
-        return np.array(
-            [math.degrees(float(self._data.qpos[i])) for i in range(len(BODY_JOINTS))],
-            dtype=float,
-        )
-
     def _gripper_distance_to_0_100(self, distance_mm: float) -> float:
         """Maps gripper finger distance (mm) to SO-101 gripper position (0-100)."""
         return float(np.clip(distance_mm / self._gripper_max_distance_mm * 100.0, 0.0, 100.0))
@@ -222,16 +258,27 @@ class MuJoCoSO101Servicer(FollowerServicer):
     # ------------------------------------------------------------------
 
     def _pose_delta_to_joint_action(self, delta_action: dict[str, float]) -> dict[str, float]:
-        """Converts a pose-delta action to a joint-space action via FK + IK.
+        """Converts a pose-delta action to a joint-space action via DLS IK.
 
-        Pipeline: FK(current joints) → compose delta → IK → joint targets.
-        Uses body-frame rotation composition (``R_current @ R_delta``), matching
-        ``robot_kinematic_processor.EEReferenceAndDelta`` — confirmed correct by
-        wayfinder #05 (coordinate frame alignment resolution).
+        Pipeline (deadband → clamp → adaptive-weight DLS solve):
+
+        1. **Deadband** — if both ``‖delta_pos‖`` and the rotation angle are
+           below their thresholds, skip IK and reuse the last body-joint
+           targets (gripper still updates).  Filters static hand noise.
+        2. **Workspace clamp** — cap ``‖delta_pos‖`` per step.
+        3. **Adaptive rot_weight DLS IK** — when the rotation delta is
+           negligible (pure translation), a low ``translation_rot_weight``
+           is used so shoulder_pan (the only Z-axis joint) can rotate freely
+           for lateral (Y) motion, accepting yaw drift.  When rotation IS
+           commanded, the normal ``rot_weight`` ensures yaw is tracked.
+
+        Smoothing happens in :meth:`GetObservation` (per-physics-loop EMA on
+        ``data.ctrl``), NOT here — this method returns the raw IK target and
+        ``SendAction`` stores it as ``_target_ctrl``.
         """
         from lerobot.utils.rotation import Rotation as R
 
-        # 1. Decode pose delta
+        # --- Decode pose delta ---
         delta_pos = np.array(
             [
                 delta_action["hand.delta_pos.x"],
@@ -251,28 +298,71 @@ class MuJoCoSO101Servicer(FollowerServicer):
         )
         gripper_distance = delta_action["gripper.distance"]
 
-        # 2. FK: current body joints → current EE pose
-        q_current = self._get_body_joint_degrees()
-        t_current = self._kin.forward_kinematics(q_current)
+        # --- Magnitudes for deadband + workspace clamp ---
+        pos_norm = float(np.linalg.norm(delta_pos))
+        rot_angle = 2.0 * math.acos(min(abs(delta_quat[3]), 1.0))
 
-        # 3. Compose delta onto current pose (body-frame)
-        t_target = t_current.copy()
-        t_target[:3, 3] = t_current[:3, 3] + delta_pos
-        r_delta = R.from_quat(delta_quat).as_matrix()
-        t_target[:3, :3] = t_current[:3, :3] @ r_delta
+        # --- Deadband: hold body joints, update only gripper ---
+        if (
+            self._last_joint_action is not None
+            and pos_norm < self._position_deadband_m
+            and rot_angle < self._rotation_deadband_rad
+        ):
+            joint_action = dict(self._last_joint_action)
+            joint_action["gripper.pos"] = self._gripper_distance_to_0_100(gripper_distance)
+            return joint_action
 
-        # 4. IK: target EE pose → joint angles (warm-started from current)
-        q_target = self._kin.inverse_kinematics(
-            q_current,
-            t_target,
-            orientation_weight=self._orientation_weight,
+        # --- Workspace clamp: cap per-step displacement ---
+        if pos_norm > self._workspace_radius_m:
+            delta_pos = delta_pos * (self._workspace_radius_m / pos_norm)
+
+        # --- Decode rotation delta (no yaw projection) ---
+        # The SO-101 is a 5-DOF arm: shoulder_pan is the only yaw joint and
+        # rotating it inevitably moves the EE laterally.  Yaw at constant XYZ
+        # is kinematically impossible — but the user WANTS yaw response, so we
+        # let the DLS handle it (rot_weight balances position vs rotation).
+        # The resulting position drift is the correct 5-DOF behaviour.
+        r_delta = R.from_quat(delta_quat)
+
+        # --- Lazy-init target pose from current MuJoCo site state ---
+        if self._target_pose is None:
+            self._mj.mj_forward(self._model, self._data)
+            sid = self._ik_solver._site_id
+            self._target_pose = np.eye(4)
+            self._target_pose[:3, 3] = self._data.site_xpos[sid].copy()
+            self._target_pose[:3, :3] = self._data.site_xmat[sid].reshape(3, 3).copy()
+
+        # --- Accumulate delta onto tracked target (body-frame rotation) ---
+        self._target_pose = self._target_pose.copy()
+        self._target_pose[:3, 3] += delta_pos
+        self._target_pose[:3, :3] = self._target_pose[:3, :3] @ r_delta.as_matrix()
+
+        # --- DLS IK: seed from previous solution, not PD-lagged qpos ---
+        # Adaptive rot_weight: pure translations use a low weight so
+        # shoulder_pan (the only Z-axis joint) can rotate freely for lateral
+        # (Y) motion.  When rotation IS commanded, use the normal weight so
+        # yaw is tracked.
+        if rot_angle < self._rotation_significant_rad:
+            effective_rw = self._translation_rot_weight
+        else:
+            effective_rw = None  # solver constructor default (rot_weight)
+        seed = self._data.qpos.copy()
+        if self._last_ik_rad is not None:
+            seed[: len(self._last_ik_rad)] = self._last_ik_rad
+        raw_rad = self._ik_solver.solve(
+            self._target_pose[:3, 3],
+            self._target_pose[:3, :3],
+            seed,
+            rot_weight=effective_rw,
         )
+        self._last_ik_rad = raw_rad.copy()
 
-        # 5. Build joint action (body joints from IK + gripper from distance mapping)
+        # --- Build joint action (radians → degrees + gripper from distance) ---
         joint_action: dict[str, float] = {}
         for i, joint in enumerate(BODY_JOINTS):
-            joint_action[f"{joint}.pos"] = float(q_target[i])
+            joint_action[f"{joint}.pos"] = math.degrees(float(raw_rad[i]))
         joint_action["gripper.pos"] = self._gripper_distance_to_0_100(gripper_distance)
+        self._last_joint_action = dict(joint_action)
         return joint_action
 
     # ------------------------------------------------------------------
@@ -291,7 +381,18 @@ class MuJoCoSO101Servicer(FollowerServicer):
             # Reset to a clean physics state on each connect so a reconnect after
             # a crashed/disconnected session doesn't inherit stale qpos/ctrl.
             self._mj.mj_resetData(self._model, self._data)
+            # Override the all-zeros default with a non-singular home pose so
+            # the arm starts inside the workspace (bent elbow) with room to
+            # move in every direction without coupling.
+            for i, deg in enumerate(self._home_joints_deg):
+                rad = math.radians(deg)
+                self._data.qpos[i] = rad
+                self._data.ctrl[i] = rad
             self._connected = True
+            self._target_pose = None  # re-sync from reset qpos on next SendAction
+            self._last_ik_rad = None
+            self._last_joint_action = None
+            self._target_ctrl = self._data.ctrl.copy()  # home ctrl → no EMA drift
         # Sim is pre-calibrated — no manual range-of-motion recording needed.
         return device_pb2.CalibrationInfo(status=device_pb2.CalibrationStatus.CALIBRATED)
 
@@ -313,10 +414,27 @@ class MuJoCoSO101Servicer(FollowerServicer):
         return device_pb2.DeviceInfo(status=device_pb2.DeviceStatus.COLLECTION)
 
     def GetObservation(self, request, context):
-        """Persistent stream: step MuJoCo physics at ~50 Hz and stream joint angles."""
+        """Persistent stream: step MuJoCo physics at ~50 Hz and stream joint angles.
+
+        Two responsibilities beyond physics stepping:
+
+        1. **Real-time substeps** — advances ``n_substeps`` physics steps per
+           loop so the sim matches wall-clock time (not 10 % real-time).
+        2. **Per-loop ctrl EMA** — blends ``data.ctrl`` toward ``_target_ctrl``
+           by ``ctrl_smoothing_alpha`` each iteration.  This produces
+           *continuous* motion between ``SendAction`` calls instead of
+           "jolt-then-freeze" — critical at low action rates (e.g. the demo's
+           4 Hz).  The stiff PD (kp≈1000) sees a gradual ramp, not a step.
+        """
+        n_substeps = max(1, int(round(_PHYSICS_PERIOD_S / self._model.opt.timestep)))
         while context.is_active():
             with self._lock:
-                self._mj.mj_step(self._model, self._data)
+                # Per-loop EMA: ramp ctrl toward target (50 Hz continuous motion)
+                if self._target_ctrl is not None:
+                    a = self._ctrl_smoothing_alpha
+                    self._data.ctrl[:] = a * self._target_ctrl + (1.0 - a) * self._data.ctrl
+                for _ in range(n_substeps):
+                    self._mj.mj_step(self._model, self._data)
                 if self._viewer:
                     self._viewer.sync()
                 obs = self._qpos_to_observation()
@@ -335,8 +453,10 @@ class MuJoCoSO101Servicer(FollowerServicer):
             else:
                 joint_action = action
 
-            # Drive MuJoCo PD actuators
-            self._data.ctrl[:] = self._joint_action_to_ctrl(joint_action)
+            # Store desired ctrl — GetObservation's per-loop EMA ramps toward it.
+            # Writing data.ctrl directly would create a step function that the
+            # stiff PD (kp≈1000, ζ≈0.26) overshoots on.
+            self._target_ctrl = self._joint_action_to_ctrl(joint_action)
             self._latest_action = action
 
         # Echo commanded action back (A-class semantics, same as MockFollowerServicer).

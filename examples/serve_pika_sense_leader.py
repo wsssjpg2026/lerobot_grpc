@@ -137,6 +137,17 @@ def main():
         action="store_true",
         help="Run interactive direction calibration before starting the server",
     )
+    parser.add_argument(
+        "--device-id",
+        default="pika_sense",
+        help="Device ID for the calibration file name (default: pika_sense)",
+    )
+    parser.add_argument(
+        "--calibration-dir",
+        default=None,
+        help="Directory for calibration files (default: ~/.cache/huggingface/lerobot/"
+        "calibration/teleoperators/pika_sense/)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -146,18 +157,27 @@ def main():
     )
 
     # --- Optional direction calibration (#05) ---
-    R_lh2base = np.eye(3)
+    R_lh2base = None
     if args.calibrate:
         from pika.sense import Sense
 
         cal_device = Sense(args.port)
         cal_device.connect()
         cal_device.get_vive_tracker()
-        time.sleep(2)
-        devices = cal_device.get_tracker_devices()
-        if not devices:
-            raise RuntimeError("No Vive Tracker devices found for calibration.")
-        R_lh2base = calibrate_direction(cal_device, devices[0])
+        # Poll for tracker (non-LH device); lighthouses appear immediately
+        # but the tracker (T20) takes a few seconds.
+        tracker_device = None
+        deadline = time.time() + 10.0
+        while time.time() < deadline:
+            devices = cal_device.get_tracker_devices()
+            trackers = [d for d in devices if not d.startswith("LH")]
+            if trackers:
+                tracker_device = trackers[0]
+                break
+            time.sleep(0.5)
+        if not tracker_device:
+            raise RuntimeError("No tracker found (only lighthouses LH* discovered).")
+        R_lh2base = calibrate_direction(cal_device, tracker_device)
         cal_device.disconnect()
 
     # --- Start server ---
@@ -168,6 +188,8 @@ def main():
         dead_zone_mm=args.dead_zone_mm,
         pos_gain=args.pos_gain,
         R_lh2base=R_lh2base,
+        calibration_dir=args.calibration_dir,
+        device_id=args.device_id,
     )
     server = LeaderServer(LeaderServerConfig(address=args.address), servicer)
     server.start()

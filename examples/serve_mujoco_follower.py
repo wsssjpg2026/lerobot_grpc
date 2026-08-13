@@ -31,6 +31,7 @@ The server is transparent to gRPC clients: ``teleop_so101.py``,
 
 import argparse
 import logging
+import math
 import time
 from pathlib import Path
 
@@ -46,7 +47,6 @@ from lerobot_robot_grpc.follower.mujoco_follower_server import (
 # works from any CWD when the repo is on sys.path.
 _PKG_ROOT = Path(__file__).resolve().parent.parent
 _DEFAULT_XML = _PKG_ROOT / "assets" / "so101" / "scene.xml"
-_DEFAULT_URDF = _PKG_ROOT / "assets" / "so101" / "so101_new_calib.urdf"
 
 
 def main():
@@ -59,29 +59,64 @@ def main():
         help=f"Path to MuJoCo scene XML (default: {_DEFAULT_XML})",
     )
     parser.add_argument(
-        "--urdf-path",
-        default=str(_DEFAULT_URDF),
-        help=f"Path to URDF for IK solver (default: {_DEFAULT_URDF})",
-    )
-    parser.add_argument(
         "--action-mode",
         choices=["joint", "pose_delta"],
         default="pose_delta",
-        help="Action mode: 'pose_delta' (FK+IK) or 'joint' (direct joint control)",
+        help="Action mode: 'pose_delta' (DLS IK) or 'joint' (direct joint control)",
     )
     parser.add_argument("--address", default="0.0.0.0:5555", help="gRPC bind address")
     parser.add_argument("--render", action="store_true", help="Launch MuJoCo viewer window")
     parser.add_argument(
-        "--orientation-weight",
+        "--rot-weight",
         type=float,
-        default=0.01,
-        help="IK orientation weight (0.01 = soft for 5-DOF under-actuation)",
+        default=0.3,
+        help="DLS rotation weight — lower prioritises position (default: 0.3 ≈ 3:1 pos:rot; "
+        "yaw on 5-DOF arm needs ≥0.2 for visible shoulder_pan response)",
     )
     parser.add_argument(
         "--gripper-max-distance-mm",
         type=float,
         default=60.0,
         help="Gripper full-open distance in mm (for distance→0-100 mapping)",
+    )
+    parser.add_argument(
+        "--home-joints",
+        default="0,-20,60,-40,0",
+        help="Comma-separated home joint angles in degrees for the 5 body joints "
+        "(shoulder_pan,shoulder_lift,elbow_flex,wrist_flex,wrist_roll). "
+        "Bent elbow avoids the full-extension singularity (default: 0,-20,60,-40,0)",
+    )
+    parser.add_argument(
+        "--ctrl-smoothing-alpha",
+        type=float,
+        default=0.20,
+        help="Per-physics-loop ctrl EMA alpha — lower = smoother but laggier "
+        "(default: 0.20; 1.0 = no smoothing, step-function ctrl)",
+    )
+    parser.add_argument(
+        "--position-deadband-mm",
+        type=float,
+        default=1.0,
+        help="Skip IK when delta_pos is below this threshold in mm (default: 1.0; 0 = disabled)",
+    )
+    parser.add_argument(
+        "--rotation-deadband-deg",
+        type=float,
+        default=0.3,
+        help="Skip IK when delta_rot is below this threshold in degrees (default: 0.3; 0 = disabled)",
+    )
+    parser.add_argument(
+        "--workspace-radius-mm",
+        type=float,
+        default=15.0,
+        help="Max per-step delta_pos in mm — caps violent lurch into the stiff PD (default: 15)",
+    )
+    parser.add_argument(
+        "--translation-rot-weight",
+        type=float,
+        default=0.0,
+        help="DLS rot_weight for pure translations (default: 0.0 = position-only IK; "
+        "shoulder_pan is the only Z-axis joint so Y motion costs yaw — 0.0 lets it rotate freely)",
     )
     args = parser.parse_args()
 
@@ -91,13 +126,20 @@ def main():
         force=True,
     )
 
+    home_joints_deg = tuple(float(x) for x in args.home_joints.split(","))
+
     servicer = MuJoCoSO101Servicer(
         xml_path=args.xml_path,
-        urdf_path=args.urdf_path,
         action_mode=args.action_mode,
         render=args.render,
-        orientation_weight=args.orientation_weight,
+        rot_weight=args.rot_weight,
         gripper_max_distance_mm=args.gripper_max_distance_mm,
+        home_joints_deg=home_joints_deg,
+        ctrl_smoothing_alpha=args.ctrl_smoothing_alpha,
+        position_deadband_m=args.position_deadband_mm / 1000.0,
+        rotation_deadband_rad=math.radians(args.rotation_deadband_deg),
+        workspace_radius_m=args.workspace_radius_mm / 1000.0,
+        translation_rot_weight=args.translation_rot_weight,
     )
     server = FollowerServer(FollowerServerConfig(address=args.address), servicer)
     server.start()

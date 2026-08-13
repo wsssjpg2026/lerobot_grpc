@@ -53,7 +53,6 @@ def _fk_ee_position(joint_obs: dict, kin) -> np.ndarray:
 def main() -> None:
     servicer = MuJoCoSO101Servicer(
         xml_path=str(XML_PATH),
-        urdf_path=str(URDF_PATH),
         action_mode="pose_delta",
         render=False,
     )
