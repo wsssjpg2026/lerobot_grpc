@@ -102,6 +102,8 @@ def main():
     # --- Alignment step ---
     print("\n" + "=" * 55)
     print("  ✅ Tracker 就绪！")
+    print("  ⏳ 建议：等待 10-15 秒让 solver 充分收敛")
+    print("     （观察 leader 日志，等位置不再大幅跳动）")
     print("  拿起 Pika Sense，保持自然朝前握持姿势")
     print("  按 Enter 完成对齐，开始遥操")
     print("=" * 55)

@@ -74,26 +74,27 @@ def compute_position_delta(
 def compute_rotation_delta_rotvec(
     rot_now: np.ndarray,
     rot_ref: np.ndarray,
-    R_lh2base: np.ndarray,
+    R_lh2base: np.ndarray,  # unused — body-frame rotvec needs no remapping
 ) -> np.ndarray:
-    """Body-frame rotation delta as a rotvec, rotated to robot base frame.
+    """Body-frame rotation delta as a rotvec.
 
-    ``R_delta = R_ref^T @ R_now`` (body-frame composition).  The rotvec of
-    ``R_delta`` is then rotated by ``R_lh2base`` — the rotation axis
-    transforms as a vector under change of basis while the angle is unchanged
-    (mathematically equivalent to the conjugation
-    ``R_lh2base @ R_delta @ R_lh2base^T``).
+    ``R_delta = R_ref^T @ R_now`` (body-frame composition).  The rotvec
+    is returned directly in the body frame — it matches the follower's
+    body-frame composition (``R_target @ R_delta``) without any world-frame
+    remapping, because both tracker and end-effector body frames are
+    aligned when the user holds the tracker in a natural forward grip.
 
     Parameters
     ----------
     rot_now, rot_ref
         3×3 rotation matrices (tracker orientation in the lighthouse frame).
     R_lh2base
-        3×3 rotation matrix mapping lighthouse vectors to robot-base vectors.
+        Unused — kept for API compatibility.  The rotvec is in the body
+        frame, not the lighthouse frame, so applying ``R_lh2base`` would
+        scramble the rotation axis.
     """
     r_delta = rot_ref.T @ rot_now
-    rotvec_lh = Rot.from_matrix(r_delta).as_rotvec()
-    return R_lh2base @ rotvec_lh
+    return Rot.from_matrix(r_delta).as_rotvec()
 
 
 def apply_dead_zone(delta: np.ndarray, threshold: float) -> np.ndarray:
@@ -111,6 +112,31 @@ def apply_ema(raw: np.ndarray, filtered: np.ndarray, alpha: float) -> np.ndarray
     return alpha * raw + (1.0 - alpha) * filtered
 
 
+def build_R_lh2base(forward_lh: np.ndarray, up_lh: np.ndarray) -> np.ndarray:
+    """Build the lighthouse→base rotation from measured axis directions.
+
+    Parameters
+    ----------
+    forward_lh, up_lh
+        Normalised lighthouse-frame direction vectors for the robot's
+        forward (base-X) and up (base-Z) axes, as measured during
+        calibration.
+
+    Returns
+    -------
+    (3, 3) rotation matrix.  Rows are base axes expressed in lighthouse
+    coordinates, so ``R @ delta_lh = [forward·δ, left·δ, up·δ]`` — the
+    correct dot-product projection.  MuJoCo SO-101 uses X=forward,
+    Y=left, Z=up (right-handed).
+    """
+    # Re-orthogonalise into a proper right-handed rotation.
+    # left = cross(up, forward), then forward = cross(left, up).
+    left_lh = np.cross(up_lh, forward_lh)
+    left_lh /= np.linalg.norm(left_lh)
+    forward_lh = np.cross(left_lh, up_lh)
+    return np.vstack([forward_lh, left_lh, up_lh])
+
+
 # ---------------------------------------------------------------------------
 # Servicer
 # ---------------------------------------------------------------------------
@@ -123,25 +149,24 @@ class PikaSenseServicer(LeaderServicer):
 
     1. Reads the Vive Tracker pose (position + quaternion) and gripper
        distance from the Pika Sense hardware.
-    2. Computes the pose delta relative to the reference (latch) or the
-       previous frame (continuous).
-    3. Rotates the delta from the lighthouse frame to the robot base frame
-       via ``R_lh2base`` (#05 direction-calibration result).
-    4. Applies a dead-zone (#06) and EMA smoothing (#06).
+    2. Computes the per-frame pose delta (current − previous frame).
+    3. Rotates the position delta from the lighthouse frame to the robot
+       base frame via ``R_lh2base`` (#05 direction-calibration result).
+    4. Applies glitch rejection (>25 mm → zero) and a dead-zone (#06) to
+       filter tracking noise.  No EMA — the follower's own ctrl EMA (50 Hz)
+       provides physical smoothing.
     5. Encodes the 8 FLOAT32 pose-delta action features and streams them.
 
     Parameters
     ----------
     port
         Serial port path for the Pika Sense device.
-    reference_mode
-        ``"latch"`` (default) — :meth:`SetReference` captures a fixed
-        reference; deltas are relative to it until the next call.  ``"continuous"``
-        — each frame's delta is relative to the previous frame (velocity control).
-    ema_alpha
-        EMA smoothing factor (0–1).  Default ``0.25`` (#06).
     dead_zone_mm
-        Position-delta dead-zone threshold in millimetres.  Default ``2.0`` (#06).
+        Position dead-zone threshold in millimetres.  Default ``2.0`` (#06).
+        Per-frame deltas below this are zeroed to filter tracking noise.
+    dead_zone_deg
+        Rotation dead-zone threshold in degrees.  Default ``0.5``.
+        Per-frame rotation deltas below this are zeroed.
     pos_gain
         Position-delta gain factor — multiplies the tracker displacement before
         sending.  Default ``1.0`` (1:1 mapping); tune with real hardware to
@@ -169,19 +194,13 @@ class PikaSenseServicer(LeaderServicer):
     def __init__(
         self,
         port: str = "/dev/ttyUSB0",
-        reference_mode: str = "latch",
-        ema_alpha: float = 0.25,
         dead_zone_mm: float = 2.0,
+        dead_zone_deg: float = 0.5,
         pos_gain: float = 1.0,
         R_lh2base: np.ndarray | None = None,
         calibration_dir: str | None = None,
         device_id: str = "pika_sense",
     ):
-        if reference_mode not in ("latch", "continuous"):
-            raise ValueError(
-                f"reference_mode must be 'latch' or 'continuous', got {reference_mode!r}"
-            )
-
         # Deferred import — the Pika SDK is an optional dependency.
         # Importing here means the module loads cleanly on machines without
         # the SDK; only construction fails.
@@ -193,9 +212,8 @@ class PikaSenseServicer(LeaderServicer):
         self._act_ft_info = build_pose_delta_feature_info()
 
         # Pipeline parameters
-        self._reference_mode = reference_mode
-        self._ema_alpha = ema_alpha
         self._dead_zone_m = dead_zone_mm / 1000.0
+        self._dead_zone_rad = np.radians(dead_zone_deg)
         self._pos_gain = pos_gain
         self._R_lh2base = R_lh2base if R_lh2base is not None else np.eye(3)
 
@@ -208,18 +226,9 @@ class PikaSenseServicer(LeaderServicer):
         self._connected = False
         self._tracker_device: str | None = None
 
-        # Latch-mode reference pose
-        self._ref_position: np.ndarray | None = None
-        self._ref_rotation: np.ndarray | None = None
-
-        # Continuous-mode previous-frame pose
+        # Per-frame previous pose (the delta reference)
         self._prev_position: np.ndarray | None = None
         self._prev_rotation: np.ndarray | None = None
-
-        # EMA filter state
-        self._ema_pos = np.zeros(3)
-        self._ema_rotvec = np.zeros(3)
-        self._ema_initialized = False
 
         # --- Calibration file persistence ---
         # Follows the lerobot convention: ~/.cache/huggingface/lerobot/
@@ -257,12 +266,11 @@ class PikaSenseServicer(LeaderServicer):
             self._load_calibration()
 
         logger.info(
-            "PikaSenseServicer created: port=%s mode=%s ema_alpha=%.2f "
-            "dead_zone_mm=%.1f calibrated=%s calibration_file=%s",
+            "PikaSenseServicer created: port=%s "
+            "dead_zone_mm=%.1f dead_zone_deg=%.1f calibrated=%s calibration_file=%s",
             port,
-            reference_mode,
-            ema_alpha,
             dead_zone_mm,
+            dead_zone_deg,
             self._calibrated,
             self._calibration_fpath,
         )
@@ -483,17 +491,8 @@ class PikaSenseServicer(LeaderServicer):
                 np.degrees(np.arccos(cos_angle)),
             )
 
-        # --- Re-orthogonalise: build a proper right-handed rotation ---
-        # left = cross(up, forward), then forward = cross(left, up).
-        # This guarantees strict orthogonality and det = +1.
-        left_lh = np.cross(up_lh, forward_lh)
-        left_lh /= np.linalg.norm(left_lh)
-        forward_lh = np.cross(left_lh, up_lh)
-
-        # R_lh2base: rows are base axes expressed in lighthouse coords.
-        # R @ delta_lh = [forward·δ, left·δ, up·δ] — correct dot-product projection.
-        # MuJoCo SO-101 uses X=forward, Y=left, Z=up (right-handed).
-        R_lh2base = np.row_stack([forward_lh, left_lh, up_lh])
+        # --- Build R_lh2base from the measured forward + up directions ---
+        R_lh2base = build_R_lh2base(forward_lh, up_lh)
         det = np.linalg.det(R_lh2base)
         if abs(det - 1.0) > 0.01:
             raise RuntimeError(f"Calibration produced invalid rotation (det={det:.4f}).")
@@ -524,53 +523,59 @@ class PikaSenseServicer(LeaderServicer):
         with self._lock:
             tracker = self._read_tracker_pose()
 
+            # --- Delta computation (per-frame delta — prevents random walk) ---
             if tracker is not None:
                 pos_now, rot_now = tracker
-            else:
-                # No data yet — emit zero deltas.
-                pos_now = np.zeros(3)
-                rot_now = np.eye(3)
-
-            # --- Delta computation (#05) ---
-            # Both latch and continuous modes use PER-FRAME delta
-            # (pos_now - prev_pos).  This prevents the random walk that
-            # occurs when the follower accumulates a constant cumulative
-            # delta every frame while the tracker has tracking noise.
-            #
-            # Latch vs continuous distinction:
-            #   - Latch: SetReference resets _prev_position → user can "re-center"
-            #   - Continuous: _prev_position auto-advances every frame (no re-center)
-            if self._prev_position is not None:
-                delta_pos = compute_position_delta(pos_now, self._prev_position, self._R_lh2base)
-                delta_rotvec = compute_rotation_delta_rotvec(rot_now, self._prev_rotation, self._R_lh2base)
-            else:
-                # First frame or just after SetReference — zero delta.
-                delta_pos = np.zeros(3)
-                delta_rotvec = np.zeros(3)
-
-            # Advance per-frame reference (both modes) — only when we have
-            # valid tracker data, so a None→valid transition doesn't produce
-            # a huge delta (valid_pos - zeros).
-            if tracker is not None:
+                if self._prev_position is not None:
+                    delta_pos = compute_position_delta(pos_now, self._prev_position, self._R_lh2base)
+                    delta_rotvec = compute_rotation_delta_rotvec(rot_now, self._prev_rotation, self._R_lh2base)
+                else:
+                    # First frame or just after SetReference — zero delta.
+                    delta_pos = np.zeros(3)
+                    delta_rotvec = np.zeros(3)
+                # Advance per-frame reference — only when we have valid
+                # tracker data, so a None→valid transition doesn't produce
+                # a huge delta.
                 self._prev_position = pos_now.copy()
                 self._prev_rotation = rot_now.copy()
+            else:
+                # Tracker lost — emit zero deltas without touching
+                # _prev_position.  When the tracker returns, deltas resume
+                # from the last valid pose (a large jump will be caught by
+                # glitch rejection below).
+                pos_now = np.zeros(3)
+                rot_now = np.eye(3)
+                delta_pos = np.zeros(3)
+                delta_rotvec = np.zeros(3)
 
             # --- Position gain (#06 scaling) ---
             delta_pos = delta_pos * self._pos_gain
 
-            # --- Dead zone (#06, position only) ---
-            delta_pos = apply_dead_zone(delta_pos, self._dead_zone_m)
+            # --- Glitch rejection: reject impossibly large per-frame deltas ---
+            # At 30 fps, 25 mm/frame = 750 mm/s — faster than any deliberate
+            # hand movement.  Anything larger is a tracking glitch (jumps of
+            # 80-130 mm observed in logs).  Zero it out instead of clamping —
+            # a clamp still sends a large delta in the glitch direction.
+            _MAX_DELTA_M = 0.025  # 25 mm
+            if np.linalg.norm(delta_pos) > _MAX_DELTA_M:
+                delta_pos = np.zeros(3)
+                delta_rotvec = np.zeros(3)
 
-            # --- EMA smoothing (#06) ---
-            if not self._ema_initialized:
-                self._ema_pos = delta_pos.copy()
-                self._ema_rotvec = delta_rotvec.copy()
-                self._ema_initialized = True
-            else:
-                self._ema_pos = apply_ema(delta_pos, self._ema_pos, self._ema_alpha)
-                self._ema_rotvec = apply_ema(
-                    delta_rotvec, self._ema_rotvec, self._ema_alpha
-                )
+            # --- NaN guard — hardware glitch can produce NaN ---
+            if not np.isfinite(delta_pos).all():
+                delta_pos = np.zeros(3)
+            if not np.isfinite(delta_rotvec).all():
+                delta_rotvec = np.zeros(3)
+
+            # --- Dead zone: filter sub-threshold tracking noise ---
+            # Applied directly to per-frame delta (no EMA).  The follower's
+            # own ctrl EMA (50 Hz), workspace clamp, and position/rotation
+            # deadband provide physical smoothing — the leader does not need
+            # to add lag.
+            if np.linalg.norm(delta_pos) < self._dead_zone_m:
+                delta_pos = np.zeros(3)
+            if np.linalg.norm(delta_rotvec) < self._dead_zone_rad:
+                delta_rotvec = np.zeros(3)
 
             # --- Gripper distance (mapped via calibrated range) ---
             try:
@@ -596,21 +601,20 @@ class PikaSenseServicer(LeaderServicer):
                     )
                 else:
                     logger.info(
-                        "TRACKER: pos=[%.3f,%.3f,%.3f]m delta=%.1fmm ema=%.1fmm "
+                        "TRACKER: pos=[%.3f,%.3f,%.3f]m delta=%.1fmm "
                         "dz=%s grip=%.1fmm",
                         pos_now[0], pos_now[1], pos_now[2],
                         np.linalg.norm(delta_pos) * 1000,
-                        np.linalg.norm(self._ema_pos) * 1000,
                         "PASS" if np.linalg.norm(delta_pos) >= self._dead_zone_m else "BLOCK",
                         gripper_distance,
                     )
 
             # --- Encode ---
-            delta_quat = Rot.from_rotvec(self._ema_rotvec).as_quat()  # [x,y,z,w]
+            delta_quat = Rot.from_rotvec(delta_rotvec).as_quat()  # [x,y,z,w]
             return {
-                "hand.delta_pos.x": float(self._ema_pos[0]),
-                "hand.delta_pos.y": float(self._ema_pos[1]),
-                "hand.delta_pos.z": float(self._ema_pos[2]),
+                "hand.delta_pos.x": float(delta_pos[0]),
+                "hand.delta_pos.y": float(delta_pos[1]),
+                "hand.delta_pos.z": float(delta_pos[2]),
                 "hand.delta_rot.qx": float(delta_quat[0]),
                 "hand.delta_rot.qy": float(delta_quat[1]),
                 "hand.delta_rot.qz": float(delta_quat[2]),
@@ -638,9 +642,6 @@ class PikaSenseServicer(LeaderServicer):
                 # pysurvive/libsurvive context cannot be recreated after
                 # destruction, so we never disconnect the device between
                 # client sessions.
-                self._ref_position = None
-                self._ref_rotation = None
-                self._ema_initialized = False
                 self._prev_position = None
                 self._prev_rotation = None
             else:
@@ -771,24 +772,17 @@ class PikaSenseServicer(LeaderServicer):
     # --- alignment ---
 
     def SetReference(self, request, context):
-        """Snapshot the current tracker pose as the delta origin.
+        """Reset the delta origin to the current tracker pose.
 
-        Resets the EMA filter so the first post-reference frame is clean.
+        Clears the previous-frame state so the first post-reference frame
+        emits zero delta.
         """
         with self._lock:
             tracker = self._read_tracker_pose()
             if tracker is not None:
-                self._ref_position, self._ref_rotation = tracker
-                logger.info(
-                    "Reference set: pos=%s",
-                    np.round(self._ref_position, 4),
-                )
+                logger.info("Reference set: pos=%s", np.round(tracker[0], 4))
             else:
-                logger.warning(
-                    "SetReference called but no tracker data available."
-                )
-            # Reset EMA and continuous-mode previous-frame state.
-            self._ema_initialized = False
+                logger.warning("SetReference called but no tracker data available.")
             self._prev_position = None
             self._prev_rotation = None
         return Empty()

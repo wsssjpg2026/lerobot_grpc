@@ -11,6 +11,7 @@ import pytest
 from lerobot_robot_grpc.leader.pika_sense_leader_server import (
     apply_dead_zone,
     apply_ema,
+    build_R_lh2base,
     compute_position_delta,
     compute_rotation_delta_rotvec,
 )
@@ -70,12 +71,9 @@ class TestRotationDelta:
         rotvec = compute_rotation_delta_rotvec(rot_now, rot_ref, R_lh2base)
         np.testing.assert_allclose(rotvec, [0, 0, angle], atol=1e-10)
 
-    def test_axis_swap_remaps_rotvec(self):
-        """X↔Y swap: rotation about X (lighthouse) → rotation about Y (base).
-
-        A rotation about X remapped through an X↔Y axis swap becomes a
-        rotation about Y.
-        """
+    def test_axis_swap_does_not_remap_rotvec(self):
+        """Body-frame rotvec is returned directly — R_lh2base is ignored
+        because the rotvec is in the body frame, not the lighthouse frame."""
         from lerobot.utils.rotation import Rotation as R
 
         angle = np.radians(20)
@@ -85,10 +83,8 @@ class TestRotationDelta:
                            [1, 0, 0],
                            [0, 0, 1]], dtype=float)
         rotvec = compute_rotation_delta_rotvec(rot_now, rot_ref, R_swap)
-        # X-rotation remapped through X↔Y swap → Y-axis
-        np.testing.assert_allclose(rotvec[0], 0.0, atol=1e-10)
-        np.testing.assert_allclose(abs(rotvec[1]), angle, atol=1e-10)
-        np.testing.assert_allclose(rotvec[2], 0.0, atol=1e-10)
+        # X-rotation stays on X — no remapping through R_lh2base
+        np.testing.assert_allclose(rotvec, [angle, 0, 0], atol=1e-10)
 
 
 class TestDeadZone:
@@ -136,3 +132,69 @@ class TestEMA:
         result = apply_ema(raw, filtered, alpha=0.25)
         # 0.25 * 0 + 0.75 * 1.0 = 0.75
         np.testing.assert_allclose(result, [0.75, 0.0, 0.0])
+
+
+class TestBuildRlh2base:
+    """build_R_lh2base: construct rotation from measured axis directions."""
+
+    def test_identity_axes(self):
+        """Forward=[1,0,0], up=[0,0,1] → identity rotation."""
+        forward = np.array([1.0, 0.0, 0.0])
+        up = np.array([0.0, 0.0, 1.0])
+        R = build_R_lh2base(forward, up)
+        np.testing.assert_allclose(R, np.eye(3), atol=1e-12)
+
+    def test_non_symmetric_rotation(self):
+        """A 35° yaw rotation: verify R @ delta_lh projects correctly.
+
+        This is the critical test — symmetric/identity matrices can mask
+        row_stack vs column_stack bugs.  A non-trivial rotation exposes them.
+        """
+        from lerobot.utils.rotation import Rotation as Rot
+
+        angle = np.radians(35)
+        Q = Rot.from_rotvec([0, 0, angle]).as_matrix()
+
+        # Rows of Q are base axes in lighthouse frame.
+        forward_lh = Q[0].copy()
+        up_lh = Q[2].copy()
+
+        R = build_R_lh2base(forward_lh, up_lh)
+
+        # R should reconstruct Q (rows = [forward, left, up]).
+        np.testing.assert_allclose(R, Q, atol=1e-12)
+
+        # Projection check: a lighthouse-frame displacement along forward_lh
+        # should map to base-X.
+        delta_lh = forward_lh * 0.05  # 5cm forward
+        delta_base = R @ delta_lh
+        np.testing.assert_allclose(delta_base, [0.05, 0.0, 0.0], atol=1e-12)
+
+        # Up displacement → base-Z.
+        delta_lh = up_lh * 0.03
+        delta_base = R @ delta_lh
+        np.testing.assert_allclose(delta_base, [0.0, 0.0, 0.03], atol=1e-12)
+
+    def test_det_is_positive_one(self):
+        """Output must be a proper rotation (det = +1)."""
+        from lerobot.utils.rotation import Rotation as Rot
+
+        rng = np.random.default_rng(42)
+        for _ in range(50):
+            # Random rotation
+            Q = Rot.from_rotvec(rng.normal(0, 1, 3)).as_matrix()
+            forward_lh = Q[0].copy()
+            up_lh = Q[2].copy()
+            R = build_R_lh2base(forward_lh, up_lh)
+            assert abs(np.linalg.det(R) - 1.0) < 1e-10
+
+    def test_noisy_inputs_still_orthogonal(self):
+        """Slightly non-orthogonal measured axes still produce a valid rotation."""
+        forward = np.array([0.99, 0.01, 0.02])
+        forward /= np.linalg.norm(forward)
+        up = np.array([0.01, 0.02, 0.98])
+        up /= np.linalg.norm(up)
+        R = build_R_lh2base(forward, up)
+        # Output rows should be orthonormal.
+        np.testing.assert_allclose(R @ R.T, np.eye(3), atol=1e-10)
+        assert abs(np.linalg.det(R) - 1.0) < 1e-10

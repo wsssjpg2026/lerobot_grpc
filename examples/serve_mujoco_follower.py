@@ -4,18 +4,16 @@ Supports two action modes:
 
 ``pose_delta`` (default) — receives end-effector pose deltas (8 FLOAT32)
   from a delta-pose leader (e.g. Pika Sense), converts them to joint targets
-  via FK + IK, and drives the MuJoCo simulation.  Requires a URDF for the IK
-  solver.
+  via DLS IK (MuJoCo Jacobian), and drives the MuJoCo simulation.
 
 ``joint`` — accepts joint-space actions directly (same contract as the real
   ``SO101FollowerServicer``, minus the hardware).
 
 Usage::
 
-    # pose_delta mode (full delta-pose → IK pipeline)
+    # pose_delta mode (full delta-pose → DLS IK pipeline)
     python serve_mujoco_follower.py \\
         --xml-path assets/so101/scene.xml \\
-        --urdf-path assets/so101/so101_new_calib.urdf \\
         --action-mode pose_delta \\
         --render
 

@@ -3,10 +3,10 @@
 A standalone :class:`FollowerServicer` (following ``MockFollowerServicer``) that
 wraps a MuJoCo simulation of the SO-101 arm.  In ``pose_delta`` mode it receives
 end-effector pose deltas (8 FLOAT32 features from the shared pose_delta_schema),
-converts them to joint targets via forward kinematics + inverse kinematics
-(``RobotKinematics`` / placo), and drives the MuJoCo physics engine.  In ``joint``
-mode it accepts joint-space actions directly — the same contract as the real
-``SO101FollowerServicer`` minus the hardware.
+converts them to joint targets via a Damped Least Squares (DLS) IK solver that
+uses MuJoCo's native Jacobian, and drives the MuJoCo physics engine.  In
+``joint`` mode it accepts joint-space actions directly — the same contract as the
+real ``SO101FollowerServicer`` minus the hardware.
 
 Designed as the prototype validation harness for delta-pose teleoperation
 (wayfinder ticket #08): no real robot, no serial port, no calibration — the
@@ -88,7 +88,8 @@ class MuJoCoSO101Servicer(FollowerServicer):
     2. Forward-kinematics → current end-effector pose (4×4).
     3. Composes the delta: ``pos_new = pos_current + delta_pos``;
        ``R_new = R_current @ R_delta`` (body-frame composition).
-    4. Inverse-kinematics (placo, warm-started from current joints) → joint targets.
+    4. DLS inverse-kinematics (MuJoCo Jacobian, warm-started from previous
+       solution) → joint targets.
     5. Maps gripper distance (mm) → SO-101 gripper (0-100).
     6. Writes the 6 joint targets (converted to radians) into ``data.ctrl``.
 
@@ -101,14 +102,15 @@ class MuJoCoSO101Servicer(FollowerServicer):
         Path to the MuJoCo scene XML (e.g. ``scene.xml`` which includes
         ``so101_new_calib.xml``).
     urdf_path
-        Path to the SO-101 URDF — required for *pose_delta* mode (FK/IK).
+        Unused (legacy parameter, kept for API compatibility).  The DLS IK
+        solver uses MuJoCo's native Jacobian and does not need a URDF.
     action_mode
         ``"pose_delta"`` (default) or ``"joint"``.
     render
         If ``True``, launch a passive MuJoCo viewer window.
-    orientation_weight
-        IK orientation weight — ``0.01`` gives soft-orientation tracking suited
-        to the 5-DOF under-actuated arm.
+    rot_weight
+        DLS rotation tracking weight — lower values prioritise position;
+        ``0.3`` gives ~3:1 position:rotation ratio suited to the 5-DOF arm.
     gripper_max_distance_mm
         Full-open distance in millimetres for the linear gripper-distance →
         0-100 mapping.
@@ -355,6 +357,18 @@ class MuJoCoSO101Servicer(FollowerServicer):
             seed,
             rot_weight=effective_rw,
         )
+
+        # NaN guard — a corrupt target pose (e.g. from a leader glitch
+        # that slipped through) produces NaN in the IK output.  Holding the
+        # last valid joint action is safer than forwarding NaN to the PD ctrl.
+        if not np.isfinite(raw_rad).all():
+            logger.warning("IK returned NaN — holding last joint action.")
+            if self._last_joint_action is not None:
+                joint_action = dict(self._last_joint_action)
+                joint_action["gripper.pos"] = self._gripper_distance_to_0_100(gripper_distance)
+                return joint_action
+            raw_rad = np.zeros(len(BODY_JOINTS))
+
         self._last_ik_rad = raw_rad.copy()
 
         # --- Build joint action (radians → degrees + gripper from distance) ---
@@ -405,9 +419,9 @@ class MuJoCoSO101Servicer(FollowerServicer):
     def Disconnect(self, request, context):
         with self._lock:
             self._connected = False
-            if self._viewer:
-                self._viewer.close()
-                self._viewer = None
+            # Keep viewer alive — same pattern as the leader's hardware
+            # persistence.  The viewer freezes (no sync calls) until a new
+            # client connects and GetObservation resumes.
         return Empty()
 
     def GetStatus(self, request, context):
