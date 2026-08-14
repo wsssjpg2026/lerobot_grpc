@@ -67,9 +67,9 @@ class TestLatchOnceAssign:
         servicer = _make_servicer()
         _apply(servicer, 0.0)
         first = _apply(servicer, 0.050)
-        x0 = float(servicer._target_pose[0, 3])
+        x0 = float(servicer._law.target_pose[0, 3])
         second = _apply(servicer, 0.050)
-        x1 = float(servicer._target_pose[0, 3])
+        x1 = float(servicer._law.target_pose[0, 3])
         assert abs(x1 - x0) < 1e-9
         joint_delta = max(
             abs(second[f"{j}.pos"] - first[f"{j}.pos"]) for j in BODY_JOINTS
@@ -83,12 +83,12 @@ class TestLatchOnceAssign:
         _apply(servicer, 0.080, n=5)
         back = _apply(servicer, 0.0, n=8)
         home_err = float(
-            np.linalg.norm(servicer._target_pose[:3, 3] - servicer._t_zero[:3, 3])
+            np.linalg.norm(servicer._law.target_pose[:3, 3] - servicer._law.t_zero[:3, 3])
         )
         assert home_err < 1e-9
-        assert servicer.last_home_err_m < 1e-9
+        assert servicer._law.last_home_err_m < 1e-9
         ee_err = float(
-            np.linalg.norm(servicer._last_achieved_pos - servicer._t_zero[:3, 3])
+            np.linalg.norm(servicer._law.last_achieved_pos - servicer._law.t_zero[:3, 3])
         )
         assert ee_err < 0.008, f"EE did not return home ({ee_err * 1000:.1f} mm)"
         for name in BODY_JOINTS:
@@ -112,9 +112,9 @@ class TestOverstretchThenHome:
         servicer = _make_servicer()
         _apply(servicer, 0.0)
         _apply(servicer, 0.40, n=4)
-        offset = servicer._target_pose[:3, 3] - servicer._t_zero[:3, 3]
+        offset = servicer._law.target_pose[:3, 3] - servicer._law.t_zero[:3, 3]
         np.testing.assert_allclose(offset, [0.40, 0.0, 0.0], atol=1e-9)
-        assert servicer.last_overshoot or servicer.last_reach_err_m > 0.008
+        assert servicer._law.last_overshoot or servicer._law.last_reach_err_m > 0.008
 
     def test_return_to_zero_after_overstretch(self):
         servicer = _make_servicer()
@@ -122,7 +122,7 @@ class TestOverstretchThenHome:
         _apply(servicer, 0.40, n=4)
         back = _apply(servicer, 0.0, n=12)
         ee_err = float(
-            np.linalg.norm(servicer._last_achieved_pos - servicer._t_zero[:3, 3])
+            np.linalg.norm(servicer._law.last_achieved_pos - servicer._law.t_zero[:3, 3])
         )
         assert ee_err < 0.008, f"overstretch return EE {ee_err * 1000:.1f} mm from home"
         assert back["elbow_flex.pos"] > 20.0, (
@@ -153,7 +153,7 @@ class TestLateralTranslation:
 class TestDLSSolveInfo:
     def test_solve_reports_achieved_pose(self):
         servicer = _make_servicer()
-        solver = servicer._ik_solver
+        solver = servicer._law.ik_solver
         seed = servicer._data.qpos.copy()
         servicer._mj.mj_forward(servicer._model, servicer._data)
         sid = solver._site_id

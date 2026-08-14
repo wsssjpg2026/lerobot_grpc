@@ -242,7 +242,7 @@ def _settle_physics(servicer: MuJoCoSO101Servicer, steps: int = 600) -> None:
 
 
 def _fk_pos(servicer: MuJoCoSO101Servicer) -> np.ndarray:
-    sid = servicer._ik_solver._site_id
+    sid = servicer._law.ik_solver._site_id
     servicer._mj.mj_forward(servicer._model, servicer._data)
     return servicer._data.site_xpos[sid].copy()
 
@@ -265,15 +265,15 @@ class TestFollowerRelatch:
         # Re-latch must not move anything by itself.
         np.testing.assert_allclose(servicer._data.qpos, qpos_before, atol=1e-12)
         np.testing.assert_allclose(
-            servicer._t_zero[:3, 3], stop_fk, atol=1e-6
+            servicer._law.t_zero[:3, 3], stop_fk, atol=1e-6
         )
 
         # ΔT=0 after re-engage → intent = stop pose, not Connect home.
         _send_delta(servicer, 0.0)
         np.testing.assert_allclose(
-            servicer._target_pose[:3, 3], stop_fk, atol=1e-6
+            servicer._law.target_pose[:3, 3], stop_fk, atol=1e-6
         )
-        home_dist = float(np.linalg.norm(servicer._target_pose[:3, 3] - home_fk))
+        home_dist = float(np.linalg.norm(servicer._law.target_pose[:3, 3] - home_fk))
         assert home_dist > 0.03, (
             f"re-engage pulled intent {home_dist * 1000:.1f} mm back toward home"
         )
@@ -303,6 +303,6 @@ class TestFollowerRelatch:
         servicer.SetReference(None, None)
         _send_delta(servicer, 0.0)
         _send_delta(servicer, 0.030)
-        offset = servicer._target_pose[:3, 3] - servicer._t_zero[:3, 3]
+        offset = servicer._law.target_pose[:3, 3] - servicer._law.t_zero[:3, 3]
         np.testing.assert_allclose(offset, [0.030, 0.0, 0.0], atol=1e-9)
-        np.testing.assert_allclose(servicer._t_zero[:3, 3], stop_fk, atol=1e-6)
+        np.testing.assert_allclose(servicer._law.t_zero[:3, 3], stop_fk, atol=1e-6)

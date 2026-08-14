@@ -68,7 +68,7 @@ def _send_delta(servicer: MuJoCoSO101Servicer, dx: float = 0.0) -> None:
 
 
 def _intent_offset(servicer: MuJoCoSO101Servicer) -> np.ndarray:
-    return servicer._target_pose[:3, 3] - servicer._t_zero[:3, 3]
+    return servicer._law.target_pose[:3, 3] - servicer._law.t_zero[:3, 3]
 
 
 # ---------------------------------------------------------------------------
@@ -79,21 +79,21 @@ def _intent_offset(servicer: MuJoCoSO101Servicer) -> np.ndarray:
 class TestAutoBubble:
     def test_auto_bubble_derived_from_urdf(self):
         servicer = _make_follower()  # workspace_bubble_m=None → auto
-        reach = servicer._max_reach_m
+        reach = servicer._law.max_reach_m
         assert 0.45 < reach < 0.65, f"unexpected max reach {reach * 1000:.0f}mm"
         servicer._lock_t_zero_from_fk()  # lock at the home FK → bubble recomputes
-        tz = float(np.linalg.norm(servicer._t_zero[:3, 3]))
-        assert servicer._workspace_bubble_m == pytest.approx(
+        tz = float(np.linalg.norm(servicer._law.t_zero[:3, 3]))
+        assert servicer._law.workspace_bubble_m == pytest.approx(
             0.6 * (reach - tz), rel=1e-9
         )
-        assert 0.05 < servicer._workspace_bubble_m < 0.25, (
-            f"bubble {servicer._workspace_bubble_m * 1000:.0f}mm out of range"
+        assert 0.05 < servicer._law.workspace_bubble_m < 0.25, (
+            f"bubble {servicer._law.workspace_bubble_m * 1000:.0f}mm out of range"
         )
 
     def test_clamp_caps_intent(self):
         servicer = _make_follower()
         _send_delta(servicer, dx=0.300)  # 300 mm — far beyond reach
-        bubble = servicer._workspace_bubble_m
+        bubble = servicer._law.workspace_bubble_m
         np.testing.assert_allclose(_intent_offset(servicer), [bubble, 0.0, 0.0], atol=1e-9)
 
     def test_small_delta_passes_through(self):
@@ -111,7 +111,7 @@ class TestAutoBubble:
         """An arm re-latched away from home gets a new clearance-based bubble."""
         servicer = _make_follower()
         _send_delta(servicer, dx=0.0)  # lock T_zero at the home FK
-        bubble_home = servicer._workspace_bubble_m
+        bubble_home = servicer._law.workspace_bubble_m
         # Extend the arm and settle physics at +150 mm.
         _send_delta(servicer, dx=0.150)
         servicer._data.ctrl[:] = servicer._target_ctrl
@@ -119,11 +119,11 @@ class TestAutoBubble:
             servicer._mj.mj_step(servicer._model, servicer._data)
         servicer._mj.mj_forward(servicer._model, servicer._data)
         servicer.SetReference(None, None)  # re-latch at the extended pose
-        tz = float(np.linalg.norm(servicer._t_zero[:3, 3]))
-        assert servicer._workspace_bubble_m == pytest.approx(
-            0.6 * (servicer._max_reach_m - tz), rel=1e-9
+        tz = float(np.linalg.norm(servicer._law.t_zero[:3, 3]))
+        assert servicer._law.workspace_bubble_m == pytest.approx(
+            0.6 * (servicer._law.max_reach_m - tz), rel=1e-9
         )
-        assert abs(servicer._workspace_bubble_m - bubble_home) > 0.001, (
+        assert abs(servicer._law.workspace_bubble_m - bubble_home) > 0.001, (
             "bubble did not update after the re-latch"
         )
 
@@ -148,30 +148,30 @@ class TestLimitEscape:
         """The bench's stuck state: warm start flipped, intent reachable — the
         arm must fold back to the home side instead of staying pinned."""
         servicer = _make_follower()
-        servicer._last_ik_rad = FLIPPED_RAD.copy()
+        servicer._law.seed_ik(FLIPPED_RAD)
         joint_action = servicer._pose_delta_to_joint_action(_delta(dx=0.040))
-        assert servicer._escaped, "flipped warm start should trigger the escape"
-        elbow_deg = math.degrees(float(servicer._last_ik_rad[2]))
+        assert servicer._law.escaped, "flipped warm start should trigger the escape"
+        elbow_deg = math.degrees(float(servicer._law.last_ik_rad[2]))
         assert elbow_deg > 0.0, f"elbow stayed flipped at {elbow_deg:.1f}°"
-        assert servicer.last_reach_err_m < 0.008, (
-            f"escaped solve residual {servicer.last_reach_err_m * 1000:.1f}mm too large"
+        assert servicer._law.last_reach_err_m < 0.008, (
+            f"escaped solve residual {servicer._law.last_reach_err_m * 1000:.1f}mm too large"
         )
         assert joint_action["elbow_flex.pos"] > 0.0
 
     def test_no_escape_from_home_side_seed(self):
         servicer = _make_follower()
-        servicer._last_ik_rad = HOME_RAD.copy()
+        servicer._law.seed_ik(HOME_RAD)
         _send_delta(servicer, dx=0.040)
-        assert not servicer._escaped
-        assert math.degrees(float(servicer._last_ik_rad[2])) > 0.0
+        assert not servicer._law.escaped
+        assert math.degrees(float(servicer._law.last_ik_rad[2])) > 0.0
 
     def test_escape_disabled_keeps_warm_solution(self):
         """Pre-fix behavior pinned: without the escape the flipped warm start
         stays flipped even though the target is reachable from home."""
         servicer = _make_follower(workspace_escape=False)
-        servicer._last_ik_rad = FLIPPED_RAD.copy()
+        servicer._law.seed_ik(FLIPPED_RAD)
         servicer._pose_delta_to_joint_action(_delta(dx=0.040))
-        assert not servicer._escaped
-        assert math.degrees(float(servicer._last_ik_rad[2])) < 0.0, (
+        assert not servicer._law.escaped
+        assert math.degrees(float(servicer._law.last_ik_rad[2])) < 0.0, (
             "warm-started solve unfolded without the escape"
         )
