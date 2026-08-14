@@ -8,11 +8,10 @@ the arm move in the MuJoCo viewer:
     2. Translate +Y then -Y (left   ↔ right)     5. Rotate about Y (pitch) ↔ return
     3. Translate +Z then -Z (down   ↔ up)        6. Rotate about Z (yaw)   ↔ return
 
-Each axis sends *N* small incremental steps out, then *N* steps back.  The
-servicer composes each delta onto an internal target pose (not the lagging
-actual position), so +steps then -steps bring the arm back to the start.  After
-each step the script prints the measured EE position, per-step displacement, and
-gripper percentage.  After each axis it prints the cumulative drift.
+Each axis sends the **current offset** from home (latch-once): step *k* of
+*N* is offset ``k * step_size``, then it counts back down to 0.  After
+each step the script prints the measured EE position, per-step displacement,
+and gripper percentage.  After each axis it prints the drift from origin.
 
 The gripper is held at its **initial** position throughout — the demo reads
 ``gripper.pos`` on connect, reverse-maps it to mm, and uses that as the
@@ -198,14 +197,15 @@ def main() -> None:
     # value at call time.
     gripper_hold_mm: float = 30.0
 
-    # Each test produces the per-step delta for a given sign (+1 = out, -1 = back).
+    # Each test produces the current latch-once offset for step index k
+    # (k = 1..N out, then N-1..0 back).
     tests: list[tuple[str, object]] = [
-        ("Translate X (forward ↔ back)", lambda s: make_delta_action(pos_mm=(s * t_mm, 0, 0), gripper_mm=gripper_hold_mm)),
-        ("Translate Y (left   ↔ right)", lambda s: make_delta_action(pos_mm=(0, s * t_mm, 0), gripper_mm=gripper_hold_mm)),
-        ("Translate Z (down   ↔ up)",    lambda s: make_delta_action(pos_mm=(0, 0, s * t_mm), gripper_mm=gripper_hold_mm)),
-        ("Rotate body-X (forearm → roll)",  lambda s: make_delta_action(rot_axis="x", rot_deg=s * r_deg, gripper_mm=gripper_hold_mm)),
-        ("Rotate body-Y (lateral → pitch)", lambda s: make_delta_action(rot_axis="y", rot_deg=s * r_deg, gripper_mm=gripper_hold_mm)),
-        ("Rotate body-Z (vertical → yaw)",  lambda s: make_delta_action(rot_axis="z", rot_deg=s * r_deg, gripper_mm=gripper_hold_mm)),
+        ("Translate X (forward ↔ back)", lambda k: make_delta_action(pos_mm=(k * t_mm, 0, 0), gripper_mm=gripper_hold_mm)),
+        ("Translate Y (left   ↔ right)", lambda k: make_delta_action(pos_mm=(0, k * t_mm, 0), gripper_mm=gripper_hold_mm)),
+        ("Translate Z (down   ↔ up)",    lambda k: make_delta_action(pos_mm=(0, 0, k * t_mm), gripper_mm=gripper_hold_mm)),
+        ("Rotate body-X (forearm → roll)",  lambda k: make_delta_action(rot_axis="x", rot_deg=k * r_deg, gripper_mm=gripper_hold_mm)),
+        ("Rotate body-Y (lateral → pitch)", lambda k: make_delta_action(rot_axis="y", rot_deg=k * r_deg, gripper_mm=gripper_hold_mm)),
+        ("Rotate body-Z (vertical → yaw)",  lambda k: make_delta_action(rot_axis="z", rot_deg=k * r_deg, gripper_mm=gripper_hold_mm)),
     ]
 
     total_mm = t_mm * args.steps
@@ -250,16 +250,16 @@ def main() -> None:
         for idx, (name, delta_fn) in enumerate(tests, 1):
             print(f"─── {idx}/6  {name} ───")
 
-            # --- N steps OUT (+) ------------------------------------------------
+            # --- N steps OUT (offset = 1..N) -----------------------------------
             for i in range(args.steps):
                 prev_ee = _send_step(
-                    client, kin, delta_fn(+1), +1, i, args.steps, prev_ee, args.dwell,
+                    client, kin, delta_fn(i + 1), +1, i, args.steps, prev_ee, args.dwell,
                 )
 
-            # --- N steps BACK (−) ----------------------------------------------
+            # --- N steps BACK (offset = N-1..0) --------------------------------
             for i in range(args.steps):
                 prev_ee = _send_step(
-                    client, kin, delta_fn(-1), -1, i, args.steps, prev_ee, args.dwell,
+                    client, kin, delta_fn(args.steps - 1 - i), -1, i, args.steps, prev_ee, args.dwell,
                 )
 
             # --- Measure drift from initial pose -------------------------------

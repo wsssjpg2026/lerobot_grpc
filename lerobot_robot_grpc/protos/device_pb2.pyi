@@ -70,9 +70,9 @@ CRITICALITY_UNSPECIFIED: Criticality
 CRITICALITY_CRITICAL: Criticality
 CRITICALITY_AUXILIARY: Criticality
 WATCH_DOG_LEVEL_UNSPECIFIED: WatchDogLevel
-A: WatchDogLevel
-B: WatchDogLevel
-C: WatchDogLevel
+WATCH_DOG_LEVEL_A: WatchDogLevel
+WATCH_DOG_LEVEL_B: WatchDogLevel
+WATCH_DOG_LEVEL_C: WatchDogLevel
 ENCODING_UNSPECIFIED: Encoding
 RAW: Encoding
 JPEG: Encoding

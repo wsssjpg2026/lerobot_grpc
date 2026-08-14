@@ -75,6 +75,23 @@ class FollowerServicer(device_pb2_grpc.RobotServicer, ABC):
         """Gets the status of the robot."""
         pass
 
+    def SetReference(self, request, context):
+        """Re-latch the pose_delta base pose (T_zero) at the current FK.
+
+        Default implementation: not supported.  Joint-space followers have no
+        Cartesian reference to latch, so they must fail loudly rather than
+        pretend success.  ``MuJoCoSO101Servicer`` (pose_delta mode) overrides
+        this to re-lock ``T_zero`` from the current gripperframe FK — the
+        clutch re-engage contract (wayfinder #10): current hand = current arm.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details(
+            "SetReference is not supported by this follower (no pose_delta base pose)"
+        )
+        from google.protobuf.empty_pb2 import Empty
+
+        return Empty()
+
 class FollowerServer:
     """gRPC server for the Follower robot."""
 

@@ -126,6 +126,34 @@ def main() -> None:
         assert gripper_val > 1.0, f"Gripper didn't open ({gripper_val:.1f})"
         print("OK — gripper responded")
 
+        # --- 6. Hold a forward offset, then identity must return toward home ---
+        print("\n=== 6. Latch-once: +10 cm offset then identity returns home ===")
+        identity = {
+            "hand.delta_pos.x": 0.0, "hand.delta_pos.y": 0.0, "hand.delta_pos.z": 0.0,
+            "hand.delta_rot.qx": 0.0, "hand.delta_rot.qy": 0.0, "hand.delta_rot.qz": 0.0,
+            "hand.delta_rot.qw": 1.0, "gripper.distance": 30.0,
+        }
+        local = MuJoCoSO101Servicer(
+            xml_path=str(XML_PATH), action_mode="pose_delta", render=False,
+            position_deadband_m=0.0, rotation_deadband_rad=0.0, workspace_radius_m=0.0,
+        )
+        local.Connect(None, None)
+        fwd = dict(identity)
+        fwd["hand.delta_pos.x"] = 0.10
+        extended = None
+        for _ in range(5):
+            extended = local._pose_delta_to_joint_action(fwd)
+        retracted = None
+        for _ in range(8):
+            retracted = local._pose_delta_to_joint_action(identity)
+        ee_err = float(np.linalg.norm(local._last_achieved_pos - local._t_zero[:3, 3]))
+        print(
+            f"elbow {extended['elbow_flex.pos']:.1f}° → {retracted['elbow_flex.pos']:.1f}°  "
+            f"home_err={ee_err*1000:.1f}mm"
+        )
+        assert ee_err < 0.008, f"identity offset did not return home ({ee_err*1000:.1f} mm)"
+        print("OK — identity offset returns the arm toward home")
+
         client.disconnect()
         print("\nMUJOCO_POSE_DELTA_PASS — delta-pose → FK → IK → MuJoCo pipeline OK")
     finally:

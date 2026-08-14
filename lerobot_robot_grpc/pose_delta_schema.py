@@ -5,11 +5,16 @@ pose_delta mode) import ``ACTION_KEYS`` and ``build_pose_delta_feature_info()``
 so the wire schema is defined in exactly one place — preventing drift between
 the two sides of the gRPC link.
 
-The schema encodes a per-frame end-effector delta as 8 scalar FLOAT32 features:
+The schema encodes the **current** end-effector offset from SetReference
+(latch-once, refreshed every frame — not a per-frame velocity) as 8
+scalar FLOAT32 features:
 
-- ``hand.delta_pos.{x,y,z}``  — translational delta (metres)
-- ``hand.delta_rot.{qx,qy,qz,qw}`` — rotational delta (quaternion)
+- ``hand.delta_pos.{x,y,z}``  — translational offset from ``T_begin`` (metres)
+- ``hand.delta_rot.{qx,qy,qz,qw}`` — rotational offset from ``T_begin`` (quaternion)
 - ``gripper.distance`` — gripper finger distance (millimetres)
+
+The follower assigns ``T_intent = T_zero ⊕ ΔT``.  Identity ΔT returns the
+arm to ``T_zero``.  Sending the same offset twice holds.
 
 All features are ``CRITICAL`` scalars ``(1,1,1) RAW`` at ``WATCH_DOG_LEVEL_A``,
 matching the convention used by ``SO101LeaderServicer._encode_feature_info``.

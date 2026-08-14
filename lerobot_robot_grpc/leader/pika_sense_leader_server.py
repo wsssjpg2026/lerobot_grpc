@@ -1,23 +1,20 @@
 """Pika Sense leader servicer for delta-pose teleoperation.
 
 Wraps the Pika Sense device (Vive Tracker + gripper sensor) as a
-:class:`LeaderServicer` that produces pose-delta actions.  The servicer reads
-the tracker's 6-DoF pose from the lighthouse frame, computes per-frame deltas
-(world-frame translation + body-frame rotation per wayfinder #05), applies
-EMA smoothing and dead-zone (#06), and streams the 8-FLOAT32 pose-delta
-action defined by :mod:`pose_delta_schema`.
+:class:`LeaderServicer` that produces pose-delta actions.  After
+:meth:`SetReference` the servicer publishes the **current offset** from
+that latch (world-frame translation + body-frame rotation), not a
+per-frame velocity.  The follower assigns ``T_intent = T_zero ⊕ ΔT``.
 
 Coordinate-frame convention (wayfinder #05):
 
-- **Translation delta** — computed in the lighthouse world frame, then rotated
-  to the robot base frame via ``R_lh2base`` (determined by direction
-  calibration at startup).
-- **Rotation delta** — ``R_delta = R_ref^T @ R_now`` (body-frame composition,
-  matching the follower's ``R_current @ R_delta``); the rotvec is rotated by
-  ``R_lh2base`` (equivalent to the conjugation
-  ``R_lh2base @ R_delta @ R_lh2base^T``).
-- **SetReference** — supports *latch-once* (default, position control) and
-  *continuous* (per-frame velocity control) modes.
+- **Translation offset** — lighthouse ``pos_now − T_begin``, rotated to the
+  robot base frame via ``R_lh2base``.
+- **Rotation offset** — ``R_delta = R_begin^T @ R_now`` (body-frame),
+  matching the follower's ``R_zero @ R_delta``.
+- **SetReference** — latch-once: locks ``T_begin`` and zeros the published
+  offset.  Re-calling it rebases the Pika origin (the arm then seeks
+  ``T_zero`` as the offset returns to identity).
 
 The Pika SDK (``pika.sense.Sense``) is imported lazily inside ``__init__`` so
 the module imports cleanly on machines without the SDK — only construction
@@ -104,12 +101,192 @@ def apply_dead_zone(delta: np.ndarray, threshold: float) -> np.ndarray:
     return delta
 
 
+def apply_soft_dead_zone(delta: np.ndarray, threshold: float) -> np.ndarray:
+    """Zero below *threshold*; linearly ramp from *threshold* to ``2 * threshold``.
+
+    A hard dead-zone is stick-slip: 1.9 mm is discarded, 2.1 mm is released in
+    full.  The ramp makes the output continuous at the threshold so tracker
+    noise just above the floor does not become a step.
+    """
+    if threshold <= 0.0:
+        return delta
+    norm = float(np.linalg.norm(delta))
+    if norm < threshold:
+        return np.zeros_like(delta)
+    if norm < 2.0 * threshold:
+        scale = (norm - threshold) / threshold
+        return delta * scale
+    return delta
+
+
 def apply_ema(raw: np.ndarray, filtered: np.ndarray, alpha: float) -> np.ndarray:
     """Exponential moving average update.
 
     ``filtered_new = alpha * raw + (1 - alpha) * filtered``.
     """
     return alpha * raw + (1.0 - alpha) * filtered
+
+
+def apply_rate_limit(value: float, prev: float, max_step: float) -> float:
+    """Clamp ``value - prev`` to ``[-max_step, max_step]``."""
+    if max_step <= 0.0:
+        return value
+    delta = value - prev
+    if delta > max_step:
+        return prev + max_step
+    if delta < -max_step:
+        return prev - max_step
+    return value
+
+
+def slerp_rotation(rot_a: np.ndarray, rot_b: np.ndarray, alpha: float) -> np.ndarray:
+    """Slerp two 3×3 rotation matrices.  ``alpha=0`` → *rot_a*, ``alpha=1`` → *rot_b*."""
+    r_a = Rot.from_matrix(rot_a)
+    r_b = Rot.from_matrix(rot_b)
+    r_delta = r_a.inv() * r_b
+    return (r_a * Rot.from_rotvec(alpha * r_delta.as_rotvec())).as_matrix()
+
+
+def clamp_vector(vec: np.ndarray, max_norm: float) -> np.ndarray:
+    """Scale *vec* down so its Euclidean norm does not exceed *max_norm*."""
+    if max_norm <= 0.0:
+        return vec
+    norm = float(np.linalg.norm(vec))
+    if norm <= max_norm:
+        return vec
+    return vec * (max_norm / norm)
+
+
+def adaptive_ema_alpha(
+    speed_m: float,
+    alpha_still: float = 0.15,
+    alpha_fast: float = 0.70,
+    fast_speed_m: float = 0.008,
+) -> float:
+    """Lerp EMA alpha from *alpha_still* to *alpha_fast* by raw pose speed."""
+    if fast_speed_m <= 0.0:
+        return float(alpha_still)
+    t = float(np.clip(speed_m / fast_speed_m, 0.0, 1.0))
+    return float(alpha_still + t * (alpha_fast - alpha_still))
+
+
+def is_pose_jump(
+    pos_now: np.ndarray,
+    pos_prev: np.ndarray | None,
+    jump_m: float,
+) -> bool:
+    """True when the tracker teleported farther than *jump_m* in one sample."""
+    if pos_prev is None or jump_m <= 0.0:
+        return False
+    return float(np.linalg.norm(pos_now - pos_prev)) > jump_m
+
+
+def consume_tracker_jump(
+    pos_raw: np.ndarray,
+    last_raw: np.ndarray | None,
+    t_begin: np.ndarray | None,
+    jump_m: float,
+) -> tuple[bool, np.ndarray, np.ndarray | None, np.ndarray]:
+    """Compare consecutive raw samples; always advance *last_raw*.
+
+    A jump rebases *t_begin* by the same world-frame step so the published
+    offset stays continuous (lighthouse re-solve must not look like a 28 cm
+    hand motion).  Returns ``(jumped, new_last_raw, new_t_begin, filt_shift)``.
+    """
+    pos_raw = np.asarray(pos_raw, dtype=float)
+    if last_raw is None:
+        return False, pos_raw.copy(), t_begin, np.zeros(3)
+    step = pos_raw - np.asarray(last_raw, dtype=float)
+    if jump_m <= 0.0 or float(np.linalg.norm(step)) <= jump_m:
+        return False, pos_raw.copy(), t_begin, np.zeros(3)
+    new_begin = None if t_begin is None else np.asarray(t_begin, dtype=float) + step
+    return True, pos_raw.copy(), new_begin, step
+
+
+def slew_vector(current: np.ndarray, target: np.ndarray, max_step: float) -> np.ndarray:
+    """Move *current* toward *target* by at most *max_step* (metres)."""
+    if max_step <= 0.0:
+        return np.asarray(target, dtype=float).copy()
+    return np.asarray(current, dtype=float) + clamp_vector(
+        np.asarray(target, dtype=float) - np.asarray(current, dtype=float),
+        max_step,
+    )
+
+
+def command_state_edge(command_now: int | None, command_prev: int | None) -> bool:
+    """True when the Pika button's command state changed since the last sample.
+
+    ``None`` means "no reading" and is never an edge.  A 0→1 **or** 1→0 change
+    toggles the clutch (wayfinder #10) — the official ``/teleop_trigger``
+    semantics: serial ``Command`` change → toggle follow/hold.
+    """
+    if command_now is None or command_prev is None:
+        return False
+    return int(command_now) != int(command_prev)
+
+
+def publish_latch_offset(
+    desired: np.ndarray,
+    published: np.ndarray,
+    *,
+    dead_zone_m: float,
+    max_delta_m: float,
+    home_capture_m: float,
+) -> np.ndarray:
+    """Slew the published offset toward *desired*.
+
+    Far from the origin a sub-threshold error is held (noise).  Inside
+    *home_capture_m* the dead-zone is disabled so a return to ``T_begin``
+    can actually reach zero.
+    """
+    desired = np.asarray(desired, dtype=float)
+    published = np.asarray(published, dtype=float)
+    error = desired - published
+    if (
+        float(np.linalg.norm(desired)) > home_capture_m
+        and float(np.linalg.norm(error)) < dead_zone_m
+    ):
+        return published.copy()
+    return slew_vector(published, desired, max_delta_m)
+
+
+def publish_latch_rotation(
+    desired_rot: np.ndarray,
+    published_rot: np.ndarray,
+    *,
+    dead_zone_rad: float,
+    max_delta_rad: float,
+    home_capture_m: float,
+    desired_pos_norm: float,
+) -> np.ndarray:
+    """Slew the published rotation toward *desired_rot* (body-frame ΔR)."""
+    r_err = published_rot.T @ desired_rot
+    err_vec = Rot.from_matrix(r_err).as_rotvec()
+    err_n = float(np.linalg.norm(err_vec))
+    if desired_pos_norm > home_capture_m and err_n < dead_zone_rad:
+        return published_rot.copy()
+    if max_delta_rad > 0.0 and err_n > max_delta_rad:
+        err_vec = err_vec * (max_delta_rad / err_n)
+    return published_rot @ Rot.from_rotvec(err_vec).as_matrix()
+
+
+def filter_pose(
+    pos_now: np.ndarray,
+    rot_now: np.ndarray,
+    filt_pos: np.ndarray | None,
+    filt_rot: np.ndarray | None,
+    alpha: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """EMA-filter a tracker pose.  First sample initialises the filter.
+
+    Filter the pose *before* taking a per-frame delta — EMA on the already
+    differenced signal leaves a lagging tail after the hand stops.
+    ``alpha >= 1`` is a passthrough.
+    """
+    if filt_pos is None or filt_rot is None or alpha >= 1.0:
+        return pos_now.copy(), rot_now.copy()
+    alpha = float(np.clip(alpha, 0.0, 1.0))
+    return apply_ema(pos_now, filt_pos, alpha), slerp_rotation(filt_rot, rot_now, alpha)
 
 
 def build_R_lh2base(forward_lh: np.ndarray, up_lh: np.ndarray) -> np.ndarray:
@@ -149,13 +326,21 @@ class PikaSenseServicer(LeaderServicer):
 
     1. Reads the Vive Tracker pose (position + quaternion) and gripper
        distance from the Pika Sense hardware.
-    2. Computes the per-frame pose delta (current − previous frame).
-    3. Rotates the position delta from the lighthouse frame to the robot
+    2. Computes the current offset from ``T_begin`` (SetReference).
+    3. Rotates the position offset from the lighthouse frame to the robot
        base frame via ``R_lh2base`` (#05 direction-calibration result).
-    4. Applies glitch rejection (>25 mm → zero) and a dead-zone (#06) to
-       filter tracking noise.  No EMA — the follower's own ctrl EMA (50 Hz)
-       provides physical smoothing.
+    4. Applies pose EMA, jump rejection, and a slew-limited publish so
+       tracker noise does not become stick-slip steps — near the origin
+       the dead-zone is disabled so a return to ``T_begin`` reaches zero.
     5. Encodes the 8 FLOAT32 pose-delta action features and streams them.
+
+    Clutch (#10): a Pika button command-state change toggles follow / hold.
+    While disengaged (or pending a re-engage relatch) the published offset
+    is **frozen at its last value** — never identity — so the follower holds
+    its stop pose.  ``GetStatus`` reports ``COLLECTION`` (following) /
+    ``IDLE`` (clutch off) as the leader→client edge channel; on the engage
+    edge the client must call the follower's ``SetReference`` before this
+    servicer's ``SetReference`` (current hand = current arm).
 
     Parameters
     ----------
@@ -163,18 +348,32 @@ class PikaSenseServicer(LeaderServicer):
         Serial port path for the Pika Sense device.
     dead_zone_mm
         Position dead-zone threshold in millimetres.  Default ``2.0`` (#06).
-        Per-frame deltas below this are zeroed to filter tracking noise.
+        Below this the delta is zero; between this and ``2×`` it is ramped.
     dead_zone_deg
         Rotation dead-zone threshold in degrees.  Default ``0.5``.
-        Per-frame rotation deltas below this are zeroed.
+        Same soft-ramp rule as the position dead-zone.
     pos_gain
-        Position-delta gain factor — multiplies the tracker displacement before
-        sending.  Default ``1.0`` (1:1 mapping); tune with real hardware to
-        match the tracker range to the SO-101 workspace (~251 mm reach).
+        Multiplies the tracker offset before publish.  Default ``0.45`` so a
+        ~20 cm hand move stays inside the SO-101 workspace.  Return-to-pose
+        still holds: back at ``T_begin`` the offset is zero regardless of gain.
+    ema_alpha
+        Pose EMA coefficient applied *before* the per-frame delta.  Default
+        ``0.25`` (~1.4 Hz at 30 Hz).  ``1.0`` disables filtering.
+    max_delta_mm
+        Max change of the *published offset* per frame in millimetres.
+        Default ``20``.  Caps how fast the offset may slew, not a discard.
+    gripper_ema_alpha
+        Independent EMA on gripper distance.  Default matches ``ema_alpha``.
+    gripper_rate_mm_s
+        Max gripper distance change in mm/s.  Default ``250``.
     R_lh2base
         3×3 rotation matrix mapping lighthouse axes to robot-base axes.
         Defaults to identity (no rotation) — override with the direction-
         calibration result for real hardware.
+    command_state_provider
+        Callable returning the Pika button command state (0/1) or ``None``.
+        Defaults to ``device.get_command_state``; injectable so the clutch
+        state machine (#10) is testable without hardware.
     """
 
     # Multi-step calibration sequence for the StreamCalibration protocol.
@@ -196,9 +395,17 @@ class PikaSenseServicer(LeaderServicer):
         port: str = "/dev/ttyUSB0",
         dead_zone_mm: float = 2.0,
         dead_zone_deg: float = 0.5,
-        pos_gain: float = 1.0,
+        pos_gain: float = 0.45,
+        ema_alpha: float = 0.15,
+        ema_alpha_fast: float = 0.70,
+        max_delta_mm: float = 20.0,
+        home_capture_mm: float = 40.0,
+        jump_mm: float = 50.0,
+        gripper_ema_alpha: float | None = None,
+        gripper_rate_mm_s: float = 250.0,
         R_lh2base: np.ndarray | None = None,
         calibration_dir: str | None = None,
+        command_state_provider=None,
         device_id: str = "pika_sense",
     ):
         # Deferred import — the Pika SDK is an optional dependency.
@@ -207,6 +414,11 @@ class PikaSenseServicer(LeaderServicer):
         from pika.sense import Sense
 
         self._device = Sense(port)
+        self._command_state_provider = (
+            command_state_provider
+            if command_state_provider is not None
+            else self._device.get_command_state
+        )
 
         # Feature schema — shared with the follower's pose_delta mode.
         self._act_ft_info = build_pose_delta_feature_info()
@@ -215,6 +427,16 @@ class PikaSenseServicer(LeaderServicer):
         self._dead_zone_m = dead_zone_mm / 1000.0
         self._dead_zone_rad = np.radians(dead_zone_deg)
         self._pos_gain = pos_gain
+        self._ema_alpha = float(ema_alpha)
+        self._ema_alpha_fast = float(ema_alpha_fast)
+        self._max_delta_m = max_delta_mm / 1000.0
+        self._home_capture_m = home_capture_mm / 1000.0
+        self._jump_m = jump_mm / 1000.0
+        self._max_delta_rad = float(self._dead_zone_rad * 8.0) if self._dead_zone_rad > 0.0 else 0.10
+        self._gripper_ema_alpha = (
+            self._ema_alpha if gripper_ema_alpha is None else float(gripper_ema_alpha)
+        )
+        self._gripper_rate_mm_s = float(gripper_rate_mm_s)
         self._R_lh2base = R_lh2base if R_lh2base is not None else np.eye(3)
 
         # Gripper calibration range (updated by Calibrate RPC).
@@ -226,9 +448,30 @@ class PikaSenseServicer(LeaderServicer):
         self._connected = False
         self._tracker_device: str | None = None
 
-        # Per-frame previous pose (the delta reference)
-        self._prev_position: np.ndarray | None = None
-        self._prev_rotation: np.ndarray | None = None
+        # Latch-once state.  T_begin is locked by SetReference; the published
+        # offset is the slew-limited current displacement from that latch.
+        self._t_begin_pos: np.ndarray | None = None
+        self._t_begin_rot: np.ndarray | None = None
+        self._published_pos = np.zeros(3)
+        self._published_rot = np.eye(3)
+        self._last_raw_pos: np.ndarray | None = None
+        self._last_jump_log_ts: float = 0.0
+        self._filt_position: np.ndarray | None = None
+        self._filt_rotation: np.ndarray | None = None
+        self._filt_gripper: float | None = None
+        self._last_action_ts: float | None = None
+
+        # Clutch state (wayfinder #10).  ``_clutched`` = following; a Pika
+        # button command-state *change* toggles it (official /teleop_trigger
+        # semantics).  While disengaged — or pending a re-engage relatch — the
+        # published offset is frozen at its last value (never identity), so
+        # the follower holds the stop pose.  ``_pending_relatch`` is set on
+        # the engage edge and cleared by SetReference: the client sequences
+        # follower.SetReference() → leader.SetReference(), so the arm never
+        # sees a zero offset against a stale T_zero.
+        self._clutched = False
+        self._pending_relatch = False
+        self._prev_command_state: int | None = None
 
         # --- Calibration file persistence ---
         # Follows the lerobot convention: ~/.cache/huggingface/lerobot/
@@ -267,10 +510,18 @@ class PikaSenseServicer(LeaderServicer):
 
         logger.info(
             "PikaSenseServicer created: port=%s "
-            "dead_zone_mm=%.1f dead_zone_deg=%.1f calibrated=%s calibration_file=%s",
+            "latch_once=True pos_gain=%.2f dead_zone_mm=%.1f dead_zone_deg=%.1f "
+            "ema_alpha=%.2f/%.2f max_delta_mm=%.1f home_capture_mm=%.0f jump_mm=%.0f "
+            "calibrated=%s calibration_file=%s",
             port,
+            self._pos_gain,
             dead_zone_mm,
             dead_zone_deg,
+            self._ema_alpha,
+            self._ema_alpha_fast,
+            max_delta_mm,
+            home_capture_mm,
+            jump_mm,
             self._calibrated,
             self._calibration_fpath,
         )
@@ -518,66 +769,142 @@ class PikaSenseServicer(LeaderServicer):
             grip_min, grip_max,
         )
 
+    def _reset_pose_filter(self) -> None:
+        """Clear per-session pose / gripper filter state (Connect / SetReference)."""
+        self._filt_position = None
+        self._filt_rotation = None
+        self._filt_gripper = None
+        self._last_action_ts = None
+        self._last_raw_pos = None
+
+    def _reset_latch(self) -> None:
+        """Drop T_begin and the published offset (Connect)."""
+        self._t_begin_pos = None
+        self._t_begin_rot = None
+        self._published_pos = np.zeros(3)
+        self._published_rot = np.eye(3)
+
     def _compute_action(self) -> dict[str, float]:
-        """Read hardware, run the full delta pipeline, return the action dict."""
+        """Read hardware, publish the current latch-once offset, return the action dict."""
         with self._lock:
             tracker = self._read_tracker_pose()
+            now = time.time()
+            dt = 1.0 / 30.0 if self._last_action_ts is None else max(now - self._last_action_ts, 1e-3)
+            self._last_action_ts = now
 
-            # --- Delta computation (per-frame delta — prevents random walk) ---
-            if tracker is not None:
-                pos_now, rot_now = tracker
-                if self._prev_position is not None:
-                    delta_pos = compute_position_delta(pos_now, self._prev_position, self._R_lh2base)
-                    delta_rotvec = compute_rotation_delta_rotvec(rot_now, self._prev_rotation, self._R_lh2base)
+            # --- Clutch edge (Pika double-click, #10) -----------------------
+            # Official /teleop_trigger semantics: any Command change toggles
+            # follow / hold.  On the engage edge the publish stays frozen
+            # until SetReference lands — the client sequences follower
+            # SetReference → leader SetReference so the follower never applies
+            # a zero offset against a stale T_zero (no crawl back to Connect
+            # home).  On the disengage edge the freeze is immediate: the
+            # follower keeps receiving the last offset and holds.
+            try:
+                command_now = int(self._command_state_provider())
+            except Exception:
+                command_now = None
+            if command_state_edge(command_now, self._prev_command_state):
+                self._clutched = not self._clutched
+                if self._clutched:
+                    self._pending_relatch = True
+                    logger.info(
+                        "CLUTCH: engaged — pending relatch until SetReference "
+                        "(publish frozen at %.1fmm).",
+                        float(np.linalg.norm(self._published_pos)) * 1000.0,
+                    )
                 else:
-                    # First frame or just after SetReference — zero delta.
-                    delta_pos = np.zeros(3)
-                    delta_rotvec = np.zeros(3)
-                # Advance per-frame reference — only when we have valid
-                # tracker data, so a None→valid transition doesn't produce
-                # a huge delta.
-                self._prev_position = pos_now.copy()
-                self._prev_rotation = rot_now.copy()
-            else:
-                # Tracker lost — emit zero deltas without touching
-                # _prev_position.  When the tracker returns, deltas resume
-                # from the last valid pose (a large jump will be caught by
-                # glitch rejection below).
-                pos_now = np.zeros(3)
-                rot_now = np.eye(3)
+                    logger.info(
+                        "CLUTCH: disengaged — publish frozen at %.1fmm, arm holds.",
+                        float(np.linalg.norm(self._published_pos)) * 1000.0,
+                    )
+            if command_now is not None:
+                self._prev_command_state = command_now
+
+            jumped = False
+            pos_now = self._filt_position if self._filt_position is not None else np.zeros(3)
+            rot_now = self._filt_rotation if self._filt_rotation is not None else np.eye(3)
+
+            if tracker is not None:
+                pos_raw, rot_raw = tracker
+                jumped, self._last_raw_pos, self._t_begin_pos, filt_shift = consume_tracker_jump(
+                    pos_raw, self._last_raw_pos, self._t_begin_pos, self._jump_m,
+                )
+                if jumped:
+                    if self._filt_position is not None:
+                        self._filt_position = self._filt_position + filt_shift
+                    if now - self._last_jump_log_ts > 1.0:
+                        self._last_jump_log_ts = now
+                        logger.warning(
+                            "TRACKER jump rebasing T_begin: Δ=%.0fmm (threshold=%.0fmm).",
+                            float(np.linalg.norm(filt_shift)) * 1000.0,
+                            self._jump_m * 1000.0,
+                        )
+                    pos_now = (
+                        self._filt_position
+                        if self._filt_position is not None
+                        else pos_raw
+                    )
+                    rot_now = (
+                        self._filt_rotation
+                        if self._filt_rotation is not None
+                        else rot_raw
+                    )
+                else:
+                    if self._filt_position is None:
+                        alpha = self._ema_alpha
+                    else:
+                        speed = float(np.linalg.norm(pos_raw - self._filt_position))
+                        alpha = adaptive_ema_alpha(
+                            speed, self._ema_alpha, self._ema_alpha_fast,
+                        )
+                    pos_now, rot_now = filter_pose(
+                        pos_raw, rot_raw,
+                        self._filt_position, self._filt_rotation,
+                        alpha,
+                    )
+                    self._filt_position = pos_now
+                    self._filt_rotation = rot_now
+
+            if (
+                self._clutched
+                and not self._pending_relatch
+                and not jumped
+                and self._t_begin_pos is not None
+                and self._t_begin_rot is not None
+                and self._filt_position is not None
+            ):
+                desired_pos = self._pos_gain * compute_position_delta(
+                    pos_now, self._t_begin_pos, self._R_lh2base,
+                )
+                desired_rot = self._t_begin_rot.T @ rot_now
+                if not np.isfinite(desired_pos).all():
+                    desired_pos = self._published_pos.copy()
+                if not np.isfinite(desired_rot).all():
+                    desired_rot = self._published_rot.copy()
+                self._published_pos = publish_latch_offset(
+                    desired_pos,
+                    self._published_pos,
+                    dead_zone_m=self._dead_zone_m,
+                    max_delta_m=self._max_delta_m,
+                    home_capture_m=self._home_capture_m,
+                )
+                self._published_rot = publish_latch_rotation(
+                    desired_rot,
+                    self._published_rot,
+                    dead_zone_rad=self._dead_zone_rad,
+                    max_delta_rad=self._max_delta_rad,
+                    home_capture_m=self._home_capture_m,
+                    desired_pos_norm=float(np.linalg.norm(desired_pos)),
+                )
+
+            delta_pos = self._published_pos.copy()
+            delta_rotvec = Rot.from_matrix(self._published_rot).as_rotvec()
+            if self._t_begin_pos is None:
                 delta_pos = np.zeros(3)
                 delta_rotvec = np.zeros(3)
 
-            # --- Position gain (#06 scaling) ---
-            delta_pos = delta_pos * self._pos_gain
-
-            # --- Glitch rejection: reject impossibly large per-frame deltas ---
-            # At 30 fps, 25 mm/frame = 750 mm/s — faster than any deliberate
-            # hand movement.  Anything larger is a tracking glitch (jumps of
-            # 80-130 mm observed in logs).  Zero it out instead of clamping —
-            # a clamp still sends a large delta in the glitch direction.
-            _MAX_DELTA_M = 0.025  # 25 mm
-            if np.linalg.norm(delta_pos) > _MAX_DELTA_M:
-                delta_pos = np.zeros(3)
-                delta_rotvec = np.zeros(3)
-
-            # --- NaN guard — hardware glitch can produce NaN ---
-            if not np.isfinite(delta_pos).all():
-                delta_pos = np.zeros(3)
-            if not np.isfinite(delta_rotvec).all():
-                delta_rotvec = np.zeros(3)
-
-            # --- Dead zone: filter sub-threshold tracking noise ---
-            # Applied directly to per-frame delta (no EMA).  The follower's
-            # own ctrl EMA (50 Hz), workspace clamp, and position/rotation
-            # deadband provide physical smoothing — the leader does not need
-            # to add lag.
-            if np.linalg.norm(delta_pos) < self._dead_zone_m:
-                delta_pos = np.zeros(3)
-            if np.linalg.norm(delta_rotvec) < self._dead_zone_rad:
-                delta_rotvec = np.zeros(3)
-
-            # --- Gripper distance (mapped via calibrated range) ---
+            # --- Gripper distance (mapped via calibrated range, then filtered) ---
             try:
                 raw_grip = float(self._device.get_gripper_distance())
                 grip_range = self._gripper_max_mm - self._gripper_min_mm
@@ -591,8 +918,22 @@ class PikaSenseServicer(LeaderServicer):
             except Exception:
                 gripper_distance = 0.0
 
+            if self._filt_gripper is None:
+                self._filt_gripper = gripper_distance
+            else:
+                if self._gripper_ema_alpha >= 1.0:
+                    candidate = gripper_distance
+                else:
+                    candidate = (
+                        self._gripper_ema_alpha * gripper_distance
+                        + (1.0 - self._gripper_ema_alpha) * self._filt_gripper
+                    )
+                self._filt_gripper = apply_rate_limit(
+                    candidate, self._filt_gripper, self._gripper_rate_mm_s * dt
+                )
+            gripper_distance = float(self._filt_gripper)
+
             # --- Diagnostic logging (1 Hz) ---
-            now = time.time()
             if now - getattr(self, "_last_debug_ts", 0.0) > 1.0:
                 self._last_debug_ts = now
                 if tracker is None:
@@ -600,12 +941,16 @@ class PikaSenseServicer(LeaderServicer):
                         "TRACKER: pose is None — solver not converged or tracker occluded."
                     )
                 else:
+                    off_m = (
+                        0.0
+                        if self._t_begin_pos is None
+                        else float(np.linalg.norm(pos_now - self._t_begin_pos))
+                    )
                     logger.info(
-                        "TRACKER: pos=[%.3f,%.3f,%.3f]m delta=%.1fmm "
-                        "dz=%s grip=%.1fmm",
+                        "TRACKER: pos=[%.3f,%.3f,%.3f]m off=%.1fmm pub=%.1fmm grip=%.1fmm",
                         pos_now[0], pos_now[1], pos_now[2],
-                        np.linalg.norm(delta_pos) * 1000,
-                        "PASS" if np.linalg.norm(delta_pos) >= self._dead_zone_m else "BLOCK",
+                        off_m * 1000.0,
+                        float(np.linalg.norm(self._published_pos)) * 1000.0,
                         gripper_distance,
                     )
 
@@ -642,8 +987,8 @@ class PikaSenseServicer(LeaderServicer):
                 # pysurvive/libsurvive context cannot be recreated after
                 # destruction, so we never disconnect the device between
                 # client sessions.
-                self._prev_position = None
-                self._prev_rotation = None
+                self._reset_pose_filter()
+                self._reset_latch()
             else:
                 self._device.connect()
                 # Initialise the Vive Tracker and wait for device discovery.
@@ -686,6 +1031,12 @@ class PikaSenseServicer(LeaderServicer):
                             "converged. Deltas will be zero until poses appear."
                         )
             self._connected = True
+            self._reset_latch()
+            # New client session starts with the clutch disengaged (#10):
+            # the Enter alignment (SetReference) is what engages teleop.
+            self._clutched = False
+            self._pending_relatch = False
+            self._prev_command_state = None
             if not self._calibrated:
                 self._calib_step = 0
                 self._calib_data = {}
@@ -761,30 +1112,48 @@ class PikaSenseServicer(LeaderServicer):
         return Empty()
 
     def GetStatus(self, request, context):
+        # COLLECTION = clutched (following), IDLE = clutch off (holding).
+        # The teleop client polls this to detect the engage/disengage edge
+        # (#10) — it is the leader→client channel for the button state.
         if self._calibrate_error:
             return device_pb2.DeviceInfo(
                 status=device_pb2.DeviceStatus.FATAL
             )
+        if self._clutched:
+            return device_pb2.DeviceInfo(
+                status=device_pb2.DeviceStatus.COLLECTION
+            )
         return device_pb2.DeviceInfo(
-            status=device_pb2.DeviceStatus.COLLECTION
+            status=device_pb2.DeviceStatus.IDLE
         )
 
     # --- alignment ---
 
     def SetReference(self, request, context):
-        """Reset the delta origin to the current tracker pose.
+        """Lock T_begin at the current tracker pose, zero the offset, engage.
 
-        Clears the previous-frame state so the first post-reference frame
-        emits zero delta.
+        Two call sites: the initial Enter alignment and every clutch
+        re-engage (#10).  The client calls the follower's ``SetReference``
+        *first* on a re-engage so both sides relatch their base pose before
+        any fresh offset is applied — current hand = current arm.
         """
         with self._lock:
             tracker = self._read_tracker_pose()
             if tracker is not None:
+                self._t_begin_pos = tracker[0].copy()
+                self._t_begin_rot = tracker[1].copy()
                 logger.info("Reference set: pos=%s", np.round(tracker[0], 4))
             else:
+                self._t_begin_pos = None
+                self._t_begin_rot = None
                 logger.warning("SetReference called but no tracker data available.")
-            self._prev_position = None
-            self._prev_rotation = None
+            self._published_pos = np.zeros(3)
+            self._published_rot = np.eye(3)
+            self._reset_pose_filter()
+            # Engage / re-engage: unlock the frozen publish.  On a re-engage
+            # this clears the pending state set by the command-state edge.
+            self._clutched = True
+            self._pending_relatch = False
         return Empty()
 
     # --- data flow ---

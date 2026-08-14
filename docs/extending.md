@@ -45,7 +45,7 @@ classes, the client, and lerobot's plugin registration do not change.
 |---|---|---|
 | Produces | observations **and** feedback | **actions** (human input) |
 | Consumes | **actions** (joint commands) | feedback (mirrored state) |
-| Extra RPC | — | `SetReference` (zero / origin pose) |
+| Extra RPC | `SetReference` — re-latch the pose_delta base `T_zero` at the current FK (clutch re-engage, #10); joint-space followers return `UNIMPLEMENTED` | `SetReference` (zero / origin pose) |
 
 A follower *receives* `SendAction`; a leader *answers* `GetAction`. Both advertise
 `action_features`, but the direction of flow is opposite.
@@ -55,6 +55,9 @@ A follower *receives* `SendAction`; a leader *answers* `GetAction`. Both adverti
 ## 2. What you do NOT touch
 
 - `device.proto` and the generated `device_pb2*.py` — the wire contract is generic.
+  (Exception: adding a **new generic RPC** to the shared contract — e.g. the
+  follower `SetReference` for clutch re-engage, wayfinder #10 — is a contract
+  change and requires the pika-sense map's approval, not a per-hardware edit.)
 - `follower/follower_server.py`, `leader/leader_server.py` — the abstract bases and the `*Server` runners.
 - `follower/grpc_follower.py`, `leader/grpc_leader.py` — the generic clients.
 - `lerobot_robot_grpc/__init__.py` — plugin registration. It already registers

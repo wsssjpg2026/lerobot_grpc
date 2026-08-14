@@ -85,6 +85,11 @@ class RobotStub:
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
                 response_deserializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.DeviceInfo.FromString,
                 _registered_method=True)
+        self.SetReference = channel.unary_unary(
+                '/rdc.v1.Robot/SetReference',
+                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+                response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                _registered_method=True)
 
 
 class RobotServicer:
@@ -152,6 +157,15 @@ class RobotServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def SetReference(self, request, context):
+        """把当前末端 FK 重锁为 pose_delta 基准 T_zero(与 Teleoperator.SetReference 对偶)。
+        离合器再接合时客户端先调本 RPC 再调 leader SetReference,保证"当前手=当前臂"。
+        不支持 pose_delta 的 follower 返回 UNIMPLEMENTED。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_RobotServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -204,6 +218,11 @@ def add_RobotServicer_to_server(servicer, server):
                     servicer.GetStatus,
                     request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
                     response_serializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.DeviceInfo.SerializeToString,
+            ),
+            'SetReference': grpc.unary_unary_rpc_method_handler(
+                    servicer.SetReference,
+                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                    response_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -476,6 +495,33 @@ class Robot:
             '/rdc.v1.Robot/GetStatus',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             lerobot__robot__grpc_dot_protos_dot_device__pb2.DeviceInfo.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SetReference(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/rdc.v1.Robot/SetReference',
+            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            google_dot_protobuf_dot_empty__pb2.Empty.FromString,
             options,
             channel_credentials,
             insecure,
