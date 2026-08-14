@@ -35,6 +35,11 @@ Calibrate/CalibrateDone RPCs (use lerobot-calibrate --robot.type=grpc_follower .
     Requires `av` (PyAV) on both sides.
   - jpeg: per-frame JPEG, backward compatible with the original protocol behavior.
 Depth maps ('<cam>_depth') are always RAW regardless of this flag.
+
+`--action_mode=pose_delta` switches the follower to end-effector pose-delta
+actions (Pika Sense teleop): the servicer loads the shared MuJoCo kinematics
+oracle and drives the sim/real-shared PoseDeltaLaw.  Requires a calibrated
+arm; pair with a latch-once leader.
 """
 import logging
 import time
@@ -56,6 +61,10 @@ class ServeFollowerConfig:
     robot: SOFollowerRobotConfig
     address: str = "0.0.0.0:5555"
     camera_encoding: str = "h264"  # "h264" (inter-frame) or "jpeg" (per-frame)
+    # "joint" (default, A-class) or "pose_delta" (B-class: 8-feature EE pose
+    # deltas solved by the shared PoseDeltaLaw with the real-arm safety
+    # posture -- base safety sphere / residual-hold / stale-hold / ~5mm slew).
+    action_mode: str = "joint"
 
 
 @parser.wrap()
@@ -63,13 +72,16 @@ def main(cfg: ServeFollowerConfig):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", force=True)
 
     robot = SO101FollowerAdapted(cfg.robot)
-    servicer = SO101FollowerServicer(robot, camera_encoding=cfg.camera_encoding)
+    servicer = SO101FollowerServicer(
+        robot, camera_encoding=cfg.camera_encoding, action_mode=cfg.action_mode
+    )
     server = FollowerServer(FollowerServerConfig(address=cfg.address), servicer)
     server.start()
     cam_names = list(cfg.robot.cameras.keys())
     logging.info(
-        "SO-101 follower server ready: address=%s serial=%s id=%s cameras=%s camera_encoding=%s",
+        "SO-101 follower server ready: address=%s serial=%s id=%s cameras=%s camera_encoding=%s action_mode=%s",
         cfg.address, cfg.robot.port, cfg.robot.id, cam_names, cfg.camera_encoding,
+        cfg.action_mode,
     )
     try:
         while True:

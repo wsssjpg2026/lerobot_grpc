@@ -54,6 +54,23 @@ GRIPPER_RAD_MAX: float = 1.74533
 # Default full-open distance for the Pika Sense gripper sensor (millimetres).
 DEFAULT_GRIPPER_MAX_DISTANCE_MM: float = 60.0
 
+
+def norm_value_to_rad(joint: str, val: float) -> float:
+    """One joint's lerobot-normalised value -> model radians (SO-101 unit
+    convention: body joints in degrees, gripper 0-100 over GRIPPER_RAD range).
+    Shared by both backend adapters -- the sim writes ctrl with it, the real
+    servicer builds its FK/IK qpos seed with it."""
+    if joint == "gripper":
+        return (val / 100.0) * (GRIPPER_RAD_MAX - GRIPPER_RAD_MIN) + GRIPPER_RAD_MIN
+    return math.radians(val)
+
+
+def rad_to_norm_value(joint: str, rad: float) -> float:
+    """Inverse of norm_value_to_rad (model radians -> lerobot-normalised)."""
+    if joint == "gripper":
+        return (rad - GRIPPER_RAD_MIN) / (GRIPPER_RAD_MAX - GRIPPER_RAD_MIN) * 100.0
+    return math.degrees(rad)
+
 # Physics step period (seconds) -- 50 Hz matches the real SO-101 observation rate.
 _PHYSICS_PERIOD_S: float = 1.0 / 50.0
 
@@ -235,22 +252,14 @@ class MuJoCoSO101Servicer(FollowerServicer):
         """Converts a lerobot joint-action dict to a MuJoCo ctrl array (radians)."""
         ctrl = np.zeros(len(JOINTS))
         for i, joint in enumerate(JOINTS):
-            val = joint_action.get(f"{joint}.pos", 0.0)
-            if joint == "gripper":
-                ctrl[i] = (val / 100.0) * (GRIPPER_RAD_MAX - GRIPPER_RAD_MIN) + GRIPPER_RAD_MIN
-            else:
-                ctrl[i] = math.radians(val)
+            ctrl[i] = norm_value_to_rad(joint, joint_action.get(f"{joint}.pos", 0.0))
         return ctrl
 
     def _qpos_to_observation(self) -> dict[str, float]:
         """Reads MuJoCo qpos and converts to lerobot-normalised values."""
         obs: dict[str, float] = {}
         for i, joint in enumerate(JOINTS):
-            rad = float(self._data.qpos[i])
-            if joint == "gripper":
-                obs[f"{joint}.pos"] = (rad - GRIPPER_RAD_MIN) / (GRIPPER_RAD_MAX - GRIPPER_RAD_MIN) * 100.0
-            else:
-                obs[f"{joint}.pos"] = math.degrees(rad)
+            obs[f"{joint}.pos"] = rad_to_norm_value(joint, float(self._data.qpos[i]))
         return obs
 
     # ------------------------------------------------------------------

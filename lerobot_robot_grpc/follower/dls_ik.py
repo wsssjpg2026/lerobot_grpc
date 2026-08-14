@@ -130,12 +130,41 @@ class DLSIKSolver:
                     f"qpos_lo_override shape {override.shape} != {self._qpos_lo.shape}"
                 )
             np.maximum(self._qpos_lo, override, out=self._qpos_lo)
+        # Construction-time limits, so set_qpos_limits narrowing is reversible
+        # (the real servicer re-applies the measured calibration range on every
+        # Connect and a looser recalibration must widen back).
+        self._initial_qpos_lo = self._qpos_lo.copy()
+        self._initial_qpos_hi = self._qpos_hi.copy()
 
         logger.info(
             "DLSIKSolver ready: site='%s' dofs=%s damping=%.3f rot_weight=%.3f "
             "rest_gain=%.3f adaptive_damping=%.3f max_iters=%d",
             site_name, body_dofs, damping, rot_weight, rest_gain, adaptive_damping, max_iters,
         )
+
+    def set_qpos_limits(self, lo: np.ndarray, hi: np.ndarray) -> None:
+        """Tightens the solved-DOF limits toward the given (lo, hi) radians.
+
+        Intersects with the current (model) limits: limits only ever narrow,
+        never widen past the URDF.  Used by the real servicer to push the
+        measured Feetech calibration range (range_min/max, converted to
+        radians) into the IK -- wayfinder pika-sense-real #04.
+        """
+        lo = np.asarray(lo, dtype=float)
+        hi = np.asarray(hi, dtype=float)
+        if lo.shape != self._qpos_lo.shape or hi.shape != self._qpos_hi.shape:
+            raise ValueError(
+                f"qpos limits shape {lo.shape}/{hi.shape} != {self._qpos_lo.shape}"
+            )
+        np.maximum(self._qpos_lo, lo, out=self._qpos_lo)
+        np.minimum(self._qpos_hi, hi, out=self._qpos_hi)
+
+    def reset_qpos_limits(self) -> None:
+        """Restores the construction-time (model) limits, undoing any
+        set_qpos_limits narrowing.  Pair with set_qpos_limits on re-Connect:
+        reset, then re-apply the current calibration range."""
+        np.copyto(self._qpos_lo, self._initial_qpos_lo)
+        np.copyto(self._qpos_hi, self._initial_qpos_hi)
 
     @property
     def qpos_limits(self) -> tuple[np.ndarray, np.ndarray]:
