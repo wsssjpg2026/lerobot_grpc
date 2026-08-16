@@ -668,3 +668,123 @@ class TestRecalibrationWidensLimits:
         _, hi = _law_of(servicer).ik_solver.qpos_limits
         assert hi[elbow] == pytest.approx(1.69)  # model range restored
 
+
+# ---------------------------------------------------------------------------
+# Regression: Calibrate raced the observation stream on the serial bus
+# (lerobot-calibrate on an uncalibrated real arm -> "Port is in use!").
+# The handler logged is_calibrated BEFORE taking the bus lock; each
+# is_calibrated read is a raw EEPROM read on the same port the streaming
+# GetObservation loop reads under the lock.
+# ---------------------------------------------------------------------------
+
+import threading  # noqa: E402
+
+from lerobot.utils.errors import DeviceNotConnectedError  # noqa: E402
+
+
+class _GuardingBus(_FakeBus):
+    """Fake bus that TRIPS on overlapping access (the real SDK's 'Port is in
+    use!') and blocks inside sync_read until released -- so the test controls
+    the interleave instead of rolling dice."""
+
+    def __init__(self, positions):
+        super().__init__(positions)
+        self.release = threading.Event()
+        self.inside = threading.Event()
+        self.violations: list[str] = []
+        self._inside = False
+        self._guard = threading.Lock()
+
+    def _enter(self, what: str):
+        with self._guard:
+            if self._inside:
+                self.violations.append(what)
+                raise RuntimeError(f"concurrent bus access: {what}")
+            self._inside = True
+        self.inside.set()
+
+    def _exit(self):
+        with self._guard:
+            self._inside = False
+        self.inside.clear()
+
+    def sync_read(self, data_name, motors=None, normalize=True, num_retry=0):
+        self._enter("sync_read")
+        try:
+            self.release.wait(timeout=5.0)
+        finally:
+            self._exit()
+        return dict(self._positions)
+
+    def read(self, data_name, motor, normalize=True, num_retry=0):
+        self._enter(f"read:{data_name}")
+        try:
+            return 0
+        finally:
+            self._exit()
+
+
+class _UncalibratedRobot(_FakeRobot):
+    """Uncalibrated fake whose bus accesses mirror the real robot: observation
+    goes through bus.sync_read, is_calibrated through a raw EEPROM read."""
+
+    def __init__(self):
+        super().__init__(calibrated=False)
+        self.bus = _GuardingBus(HOME_POS)
+
+    def get_observation(self):
+        pos = self.bus.sync_read("Present_Position")
+        return {f"{j}.pos": pos[j] for j in JOINTS}
+
+    @property
+    def is_calibrated(self):  # like FeetechMotorsBus.is_calibrated: a bus read
+        self.bus.read("Min_Position_Limit", "shoulder_pan", normalize=False)
+        return False
+
+    @is_calibrated.setter
+    def is_calibrated(self, _value):  # _FakeRobot.__init__ assigns; ignore
+        pass
+
+
+class _Ctx:
+    def __init__(self):
+        self._stop = threading.Event()
+
+    def is_active(self):
+        return not self._stop.is_set()
+
+    def peer(self):
+        return "test"
+
+    def stop(self):
+        self._stop.set()
+
+
+def _drain_obs_stream(servicer, ctx):
+    """Consume one observation snapshot (blocks inside the bus read until the
+    test releases it), then stop the stream."""
+    gen = servicer.GetObservation(None, ctx)
+    next(gen)  # hold the bus mid-read
+    ctx.stop()
+    gen.close()
+
+
+def test_calibrate_never_touches_bus_outside_the_lock():
+    servicer = _make_servicer(robot=_UncalibratedRobot(), bus_call_timeout_s=0.3)
+    bus = cast(_GuardingBus, servicer.robot.bus)
+    servicer.Connect(None, None)
+    ctx = _Ctx()
+    obs_thread = threading.Thread(target=_drain_obs_stream, args=(servicer, ctx), daemon=True)
+    obs_thread.start()
+    # Wait until the obs stream is genuinely inside its bus read.
+    assert bus.inside.wait(timeout=2.0)
+
+    # With the bug this read races the stream (RuntimeError from the guard);
+    # fixed, Calibrate waits on the bus lock and times out cleanly instead.
+    with pytest.raises(DeviceNotConnectedError, match="bus lock busy"):
+        servicer.Calibrate(device_pb2.CalibrateRequest(force=False), ctx)
+    assert bus.violations == []
+
+    bus.release.set()
+    obs_thread.join(timeout=5.0)
+    assert not obs_thread.is_alive()

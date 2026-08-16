@@ -592,15 +592,32 @@ class SO101FollowerServicer(FollowerServicer):
     def Calibrate(self, request, context):
         if not self.robot.is_connected:
             self.robot.connect(False)
-        # connect(False) 跳过了 bus.write_calibration()；若标定文件已存在，先同步到 bus，
-        # 使 is_calibrated 反映真实状态（避免已有标定时仍误启动标定线程→白屏）。
-        if self.robot.calibration and not self.robot.is_calibrated and not request.force:
-            self.robot.bus.write_calibration(self.robot.calibration)
+        # Cheap early-out BEFORE touching the bus: a running calibration holds
+        # the bus lock for its whole recording, so any is_calibrated read here
+        # would race it (and the observation stream) on the serial port.
+        with self._calibration_state_lock:
+            if self._calibrating:
+                return device_pb2.CalibrationInfo(status=device_pb2.CalibrationStatus.CALIBRATING)
+        # is_calibrated is a raw EEPROM read: it MUST run under the bus lock.
+        # Reading it unlocked races the observation stream's sync_read on the
+        # same serial port -> SDK "Port is in use!" (real-arm #05 smoke).
+        if not self._acquire_bus("calibrate", timeout=self.bus_call_timeout_s):
+            raise DeviceNotConnectedError(
+                "Cannot calibrate: bus lock busy (stuck call or just released)."
+            )
+        try:
+            # connect(False) 跳过了 bus.write_calibration()；若标定文件已存在，先同步到 bus，
+            # 使 is_calibrated 反映真实状态（避免已有标定时仍误启动标定线程→白屏）。
+            if self.robot.calibration and not self.robot.is_calibrated and not request.force:
+                self.robot.bus.write_calibration(self.robot.calibration)
+            is_calibrated = self.robot.is_calibrated
+        finally:
+            self._release_bus()
         logger.info(
             f"Calibrate RPC received (peer={context.peer()!r}, force={request.force}, "
-            f"is_calibrated={self.robot.is_calibrated})."
+            f"is_calibrated={is_calibrated})."
         )
-        if self.robot.is_calibrated and not request.force:
+        if is_calibrated and not request.force:
             return device_pb2.CalibrationInfo(status=device_pb2.CalibrationStatus.CALIBRATED)
 
         with self._calibration_state_lock:
