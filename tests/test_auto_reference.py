@@ -31,6 +31,7 @@ class _FakeSense:
         self.pose_position = np.zeros(3)
         self.pose_quat = np.array([0.0, 0.0, 0.0, 1.0])
         self.gripper = 30.0
+        self.devices = ["FAKE"]
 
     def connect(self):
         pass
@@ -39,7 +40,7 @@ class _FakeSense:
         pass
 
     def get_tracker_devices(self):
-        return ["FAKE"]
+        return self.devices
 
     def get_pose(self, device):
         return _FakePose(self.pose_position, self.pose_quat)
@@ -113,6 +114,32 @@ class TestAutoReference:
         servicer._device.pose_position = np.array([0.0, 0.6, 0.0])
         action = servicer._compute_action()
         assert _delta_pos(action)[1] == pytest.approx(0.6 * 0.45, abs=1e-6)
+
+
+class TestLateTrackerDiscovery:
+    def test_tracker_discovered_late_heals_pose_channel(self, tmp_path):
+        """Cold-start race (05 号议题实测): the tracker registers with
+        pysurvive after Connect's 10s deadline, so _tracker_device stays
+        None and the pose channel used to be dead for the process lifetime.
+        _read_tracker_pose now re-scans lazily until the tracker appears."""
+        servicer = _make_leader(tmp_path, auto_reference=True)
+        servicer._tracker_device = None            # Connect gave up
+        servicer._device.devices = ["LH0", "LH1"]  # only lighthouses so far
+
+        action = servicer._compute_action()        # pose channel dead: zeros
+        np.testing.assert_allclose(_delta_pos(action), [0.0, 0.0, 0.0], atol=1e-9)
+        assert servicer._tracker_device is None
+
+        servicer._device.devices = ["LH0", "LH1", "T20"]  # tracker lands late
+        action = servicer._compute_action()        # lazy scan + auto-latch
+        assert servicer._tracker_device == "T20"
+        assert servicer._t_begin_pos is not None
+        assert servicer._clutched is True
+        np.testing.assert_allclose(_delta_pos(action), [0.0, 0.0, 0.0], atol=1e-9)
+
+        servicer._device.pose_position = np.array([0.0, 0.0, 0.6])
+        action = servicer._compute_action()
+        assert _delta_pos(action)[2] == pytest.approx(0.6 * 0.45, abs=1e-6)
 
 
 class TestDefaultContract:

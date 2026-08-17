@@ -545,12 +545,33 @@ class PikaSenseServicer(LeaderServicer):
     # Internal: pose reading and delta computation
     # ------------------------------------------------------------------
 
+    def _try_discover_tracker(self) -> bool:
+        """One scan for a non-lighthouse tracker; caches into ``_tracker_device``.
+
+        Cold starts can register the tracker with pysurvive a few seconds
+        after Connect's 10 s deadline (05 号议题实测: T20 registered at
+        ~10–15 s; the server never retried and the pose channel stayed dead
+        for the whole process lifetime).  Cheap enough to call per read
+        while undiscovered; a no-op once cached.
+        """
+        if self._tracker_device is not None:
+            return True
+        devices = self._device.get_tracker_devices()
+        trackers = [d for d in devices if not d.startswith("LH")]
+        if trackers:
+            self._tracker_device = trackers[0]
+            logger.info("Vive Tracker discovered: %s", self._tracker_device)
+            return True
+        return False
+
     def _read_tracker_pose(self) -> tuple[np.ndarray, np.ndarray] | None:
         """Read current tracker pose as (position, rotation_matrix).
 
-        Returns ``None`` if the tracker is not yet producing data.
+        Returns ``None`` if the tracker is not yet producing data.  Retries
+        device discovery while no tracker is cached — the tracker can appear
+        after Connect gave up.
         """
-        if self._tracker_device is None:
+        if not self._try_discover_tracker():
             return None
         pose = self._device.get_pose(self._tracker_device)
         if pose is None:
@@ -1014,17 +1035,13 @@ class PikaSenseServicer(LeaderServicer):
                 # Initialise the Vive Tracker and wait for device discovery.
                 self._device.get_vive_tracker()
                 # Lighthouses (LH*) are discovered immediately, but the actual
-                # tracker (e.g. "T20") takes ~2–5 s.  Poll until a non-LH device
+                # tracker (e.g. "T20") takes ~2–15 s.  Poll until a non-LH device
                 # appears — reading a lighthouse pose gives a stationary position
-                # (delta永远=0), which silently breaks calibration.
+                # (delta永远=0), which silently breaks calibration.  If it still
+                # has not appeared, _read_tracker_pose re-scans lazily.
                 self._tracker_device = None
                 deadline = time.time() + 10.0
-                while time.time() < deadline:
-                    devices = self._device.get_tracker_devices()
-                    trackers = [d for d in devices if not d.startswith("LH")]
-                    if trackers:
-                        self._tracker_device = trackers[0]
-                        break
+                while time.time() < deadline and not self._try_discover_tracker():
                     time.sleep(0.5)
                 if self._tracker_device is None:
                     logger.warning(
