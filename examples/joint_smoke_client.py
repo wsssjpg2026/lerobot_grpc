@@ -145,6 +145,32 @@ def run_scan(args) -> int:
     base = _obs_joints(client)
     print("base pose (deg):", {k: round(v, 1) for k, v in base.items()})
     command_state = {j + ".pos": base[j] for j in (*BODY_SCAN_ORDER, "gripper")}
+    if args.repose_json:
+        # Motor-driven repositioning from the (torque-on) connect pose to a
+        # mid-travel base -- hands-free for the human: the servos hold every
+        # intermediate pose.  Order lifts the arm before folding the elbow,
+        # both directions proven smooth on the real arm.
+        repose = json.loads(args.repose_json)
+        order = [j for j in ("shoulder_lift", "shoulder_pan", "elbow_flex",
+                             "wrist_flex", "wrist_roll") if j in repose]
+        print("repose to:", {j: repose[j] for j in order})
+        for joint in order:
+            _send_joint(client, command_state, joint + ".pos",
+                        float(repose[joint]), joint, args)
+            time.sleep(1.0)
+        base = _obs_joints(client)
+        print("reposed base pose (deg):", {k: round(v, 1) for k, v in base.items()})
+        command_state = {j + ".pos": base[j] for j in (*BODY_SCAN_ORDER, "gripper")}
+        measured = json.loads(args.measured_travel) if args.measured_travel else None
+        pre = check_base_headroom(base, limits, measured,
+                                  required_deg=args.required_headroom_deg)
+        for r in pre:
+            print("  preflight " + r.joint.ljust(13)
+                  + " min " + format(r.min_headroom_deg, "+7.1f")
+                  + "  " + ("PASS" if r.passed else "FAIL"))
+        if not all(r.passed for r in pre):
+            print("PREFLIGHT FAIL after repose -- aborting before any scan step")
+            return 1
     tiers = tuple(float(t) for t in args.tiers.split(","))
     steps = build_scan_steps(base, limits, tiers=tiers, margin_deg=args.margin_deg)
     for s in steps:
@@ -298,9 +324,14 @@ def main() -> int:
     p.add_argument("--margin-deg", type=float, default=5.0)
     p.add_argument("--dwell-s", type=float, default=2.0)
     p.add_argument("--silence-fraction", type=float, default=0.5)
+    p.add_argument("--repose-json", default="",
+                   help='JSON {joint: deg} motor-driven repositioning to a mid-travel'
+                        ' base after connect, e.g. \'{"shoulder_lift": 40, "elbow_flex": -30}\''
+                        " (scan mode; arm holds itself, hands-free for the human)")
     p.add_argument("--measured-travel", default="",
                    help="JSON {joint: [minus_room_deg, plus_room_deg]} hand-measured"
-                        " free travel from the current pose (preflight only)")
+                        " free travel from the current pose (preflight and the"
+                        " post-repose check in scan mode)")
     p.add_argument("--required-headroom-deg", type=float, default=15.0)
     p.add_argument("--send-mode", choices=["ramp", "step"], default="ramp",
                    help="ramp: stream <=ramp-step goals at ramp-hz (lerobot-teleoperate"
