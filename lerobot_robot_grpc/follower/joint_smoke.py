@@ -14,6 +14,7 @@ SO101FollowerServicer._apply_calibration_qpos_limits uses for the IK limits.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 
 # Feetech STS3215 raw resolution: 0..4095 ticks = one full turn (lerobot table).
@@ -114,6 +115,24 @@ def build_scan_steps(
                 else:
                     steps.append(ScanStep(joint, tier, direction, target))
     return steps
+
+
+def ramp_goal(current: float, target: float, max_step: float) -> list[float]:
+    """Goal stream from current towards target in equal steps of at most max_step.
+
+    Streaming these at a fixed rate reproduces the lerobot-teleoperate command
+    waveform (many small goal deltas per second -- official teleop has no
+    interpolation, smoothness comes from the hand) instead of a one-shot
+    absolute jump.  The first element is one step past current, the last is
+    exactly target, and a zero-distance ramp still re-asserts target once.
+    """
+    if max_step <= 0:
+        raise ValueError("max_step must be positive")
+    distance = target - current
+    steps = max(1, math.ceil(abs(distance) / max_step))
+    ramp = [current + distance * i / steps for i in range(1, steps)]
+    ramp.append(target)
+    return ramp
 
 @dataclass(frozen=True)
 class DwellResult:

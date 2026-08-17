@@ -265,3 +265,37 @@ class TestRetryingRpc:
             raise RuntimeError("reconnect also down")
         with pytest.raises(RuntimeError, match="rpc down"):
             retrying_rpc(fn, reconnect, attempts=2, sleep=self._no_sleep)
+
+from lerobot_robot_grpc.follower.joint_smoke import ramp_goal  # noqa: E402
+
+
+class TestRampGoal:
+    def test_last_element_is_exactly_target(self):
+        assert ramp_goal(-3.5, 5.0, 0.25)[-1] == 5.0
+
+    def test_step_cap_respected(self):
+        ramp = ramp_goal(0.0, 10.0, 0.25)
+        prev = 0.0
+        for g in ramp:
+            assert abs(g - prev) <= 0.25 + 1e-12
+            prev = g
+
+    def test_monotone_in_direction_and_even_spacing(self):
+        ramp = ramp_goal(1.0, 4.0, 1.0)
+        assert ramp == [2.0, 3.0, 4.0]
+
+    def test_negative_direction(self):
+        assert ramp_goal(4.0, 1.0, 1.0) == [3.0, 2.0, 1.0]
+
+    def test_zero_distance_still_reasserts_target_once(self):
+        # A hold command must still be sent -- the full-dict contract relies
+        # on every send carrying every joint's commanded value.
+        assert ramp_goal(7.5, 7.5, 0.25) == [7.5]
+
+    def test_exact_multiple_takes_that_many_steps(self):
+        # 10 deg at 2.5 deg/step -> exactly 4 steps, no off-by-one padding.
+        assert ramp_goal(0.0, 10.0, 2.5) == [2.5, 5.0, 7.5, 10.0]
+
+    def test_non_positive_step_rejected(self):
+        with pytest.raises(ValueError, match="max_step"):
+            ramp_goal(0.0, 5.0, 0.0)

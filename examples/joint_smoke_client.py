@@ -6,6 +6,15 @@ shoulder_pan..wrist_roll +/-5 then +/-10 with 5deg-margin pre-check (skip,
 never clip); gripper 0->100->original; stream-cut mid-scan 3s + kill -9.
 Pass: steady <=2deg, no oscillation, overshoot <=2deg, drift <=0.5deg.
 
+Round-3 amendment (criteria unchanged, send waveform only): every action is
+a FULL dict of all 6 joints + gripper, and ramp mode (default) streams the
+moving joint's goal in <=ramp-step-deg steps at ramp-hz -- the same waveform
+as official lerobot-teleoperate.  Full dicts are mandatory because
+GRPCFollower zero-initialises its action cache at every connect and merges
+partial dicts into it: a single-joint send would command the other joints
+to 0.0 (the calibration mid = folded rest pose), yanking them after every
+reconnect.
+
 Run (from lerobot_grpc/):
     python examples/joint_smoke_client.py --mode scan
     kill -9 <printed pid>
@@ -35,6 +44,7 @@ from lerobot_robot_grpc.follower.joint_smoke import (
     evaluate_dwell,
     evaluate_freeze,
     limits_from_raw_ranges,
+    ramp_goal,
     retrying_rpc,
 )
 
@@ -75,6 +85,46 @@ def _send(client: GRPCFollower, action: dict[str, float]) -> None:
                  reconnect=lambda: _reconnect(client), on_retry=_note)
 
 
+def _send_joint(client: GRPCFollower, command_state: dict[str, float],
+                key: str, target: float, joint: str, args) -> None:
+    """Drive one joint to target with FULL-dict actions; ramp unless told not to.
+
+    command_state holds the last commanded value of every feature and is sent
+    in full each time, so the server-side zero-initialised action cache can
+    never leak a 0.0 onto joints we did not mean to move.  ramp mode streams
+    the goal in small steps at a fixed rate (teleoperate waveform) and stops
+    pushing early if the joint stops making progress -- the dwell then judges.
+    """
+    def send_value(value: float) -> None:
+        _send(client, {**command_state, key: value})
+        command_state[key] = value
+
+    if args.send_mode == "step":
+        send_value(target)
+        return
+
+    max_step = args.ramp_step_gripper if joint == "gripper" else args.ramp_step_deg
+    start = command_state[key]
+    direction = 1.0 if target >= start else -1.0
+    check_t = time.perf_counter()
+    check_pos: float | None = None
+    next_t = time.perf_counter()
+    for goal in ramp_goal(start, target, max_step):
+        send_value(goal)
+        now = time.perf_counter()
+        if now - check_t >= 1.0:
+            pos = _obs_joints(client)[joint]
+            if check_pos is not None and (pos - check_pos) * direction < 0.3:
+                print("  [ramp] " + joint + " stalled at "
+                      + format(pos, ".1f") + " -- holding here, dwell will judge")
+                break
+            check_pos, check_t = pos, now
+        next_t += 1.0 / args.ramp_hz
+        sleep = next_t - time.perf_counter()
+        if sleep > 0:
+            time.sleep(sleep)
+
+
 def _dwell(client: GRPCFollower, seconds: float) -> list[dict[str, float]]:
     """Sample all joints at 10 Hz for seconds; one row per sample."""
     rows = []
@@ -94,6 +144,7 @@ def run_scan(args) -> int:
 
     base = _obs_joints(client)
     print("base pose (deg):", {k: round(v, 1) for k, v in base.items()})
+    command_state = {j + ".pos": base[j] for j in (*BODY_SCAN_ORDER, "gripper")}
     tiers = tuple(float(t) for t in args.tiers.split(","))
     steps = build_scan_steps(base, limits, tiers=tiers, margin_deg=args.margin_deg)
     for s in steps:
@@ -138,7 +189,7 @@ def run_scan(args) -> int:
         key = step.joint + ".pos"
         label = step.joint + format(step.direction * step.tier_deg, "+.0f")
         print("step " + str(idx) + ": " + label + " -> " + format(step.target_deg, ".1f"))
-        _send(client, {key: step.target_deg})
+        _send_joint(client, command_state, key, step.target_deg, step.joint, args)
         go = _dwell(client, args.dwell_s)
         log(go, "scan", label)
         res = evaluate_dwell([r[step.joint] for r in go], step.target_deg)
@@ -148,7 +199,7 @@ def run_scan(args) -> int:
               + (" PASS" if res.passed else " FAIL"))
         if not res.passed:
             failures.append(label + "-go")
-        _send(client, {key: base[step.joint]})
+        _send_joint(client, command_state, key, base[step.joint], step.joint, args)
         back = _dwell(client, args.dwell_s)
         log(back, "scan", label + "-return")
         res = evaluate_dwell([r[step.joint] for r in back], base[step.joint])
@@ -161,11 +212,11 @@ def run_scan(args) -> int:
         baseline_rows = back
 
     print("=== gripper cycle 0 -> 100 -> original ===")
-    _send(client, {"gripper.pos": 0.0})
+    _send_joint(client, command_state, "gripper.pos", 0.0, "gripper", args)
     log(_dwell(client, args.dwell_s), "gripper", "close")
-    _send(client, {"gripper.pos": 100.0})
+    _send_joint(client, command_state, "gripper.pos", 100.0, "gripper", args)
     log(_dwell(client, args.dwell_s), "gripper", "open")
-    _send(client, {"gripper.pos": base["gripper"]})
+    _send_joint(client, command_state, "gripper.pos", base["gripper"], "gripper", args)
     log(_dwell(client, args.dwell_s), "gripper", "return")
 
     print("================ SUMMARY ================")
@@ -251,6 +302,14 @@ def main() -> int:
                    help="JSON {joint: [minus_room_deg, plus_room_deg]} hand-measured"
                         " free travel from the current pose (preflight only)")
     p.add_argument("--required-headroom-deg", type=float, default=15.0)
+    p.add_argument("--send-mode", choices=["ramp", "step"], default="ramp",
+                   help="ramp: stream <=ramp-step goals at ramp-hz (lerobot-teleoperate"
+                        " waveform); step: round-1 one-shot behaviour for A/B")
+    p.add_argument("--ramp-hz", type=float, default=60.0)
+    p.add_argument("--ramp-step-deg", type=float, default=0.25,
+                   help="max per-tick goal change in deg for body joints (ramp mode)")
+    p.add_argument("--ramp-step-gripper", type=float, default=10.0,
+                   help="max per-tick goal change in 0-100 units for the gripper")
     args = p.parse_args()
     if args.mode == "observe":
         return run_observe(args)
