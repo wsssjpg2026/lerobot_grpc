@@ -201,6 +201,7 @@ class SO101FollowerServicer(FollowerServicer):
         workspace_radius_m: float = 0.005,
         max_dq_deg: float = 4.0,
         gripper_max_distance_mm: float = DEFAULT_GRIPPER_MAX_DISTANCE_MM,
+        elbow_max_deg: float | None = 2.0,
     ):
         self.robot = robot
         if camera_encoding not in ("jpeg", "h264"):
@@ -252,6 +253,11 @@ class SO101FollowerServicer(FollowerServicer):
         # a gap > stale_timeout_s makes the next solve hold the last joints.
         self._stale_timeout_s = float(stale_timeout_s)
         self._last_action_monotonic: float | None = None
+        # Elbow over-fold hard wall (#05 bench): the physical arm binds at
+        # ~+3-4 deg past the folded-rest calibration zero (positive = over-fold,
+        # model qpos == normalised degrees), while the recorded calibration
+        # range overstates that side.  None disables the cap.
+        self._elbow_max_deg = None if elbow_max_deg is None else float(elbow_max_deg)
         # Held by the calibration thread for its whole duration; GetObservation/SendAction use a
         # non-blocking acquire to reject bus access while the robot is being manually moved.
         self._calibration_lock = threading.Lock()
@@ -481,6 +487,12 @@ class SO101FollowerServicer(FollowerServicer):
             half_span_deg = (mc.range_max - mc.range_min) / 2.0 * 360.0 / 4095.0
             lo[i] = -math.radians(half_span_deg)
             hi[i] = math.radians(half_span_deg)
+        # The over-fold hard wall cuts the elbow ceiling no matter how wide the
+        # recorded range is (the calibration only bounds the reachable half-span;
+        # the wall is a one-sided mechanical stop #05 measured at +2~4 deg).
+        if self._elbow_max_deg is not None:
+            elbow = BODY_JOINTS.index("elbow_flex")
+            hi[elbow] = min(hi[elbow], math.radians(self._elbow_max_deg))
         self._law.ik_solver.set_qpos_limits(lo, hi)
         logger.info(
             "IK joint limits tightened to measured calibration range (deg): [%s]",

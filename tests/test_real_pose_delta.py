@@ -475,7 +475,7 @@ class TestCalibrationQposLimits:
     def test_connect_tightens_ik_limits_to_measured_range(self):
         robot = _FakeRobot()
         robot.calibration = _calibration()
-        servicer = _make_servicer(robot, action_mode="pose_delta")
+        servicer = _make_servicer(robot, action_mode="pose_delta", elbow_max_deg=None)
         lo0, hi0 = _law_of(servicer).ik_solver.qpos_limits
         _connect(servicer)
         lo, hi = _law_of(servicer).ik_solver.qpos_limits
@@ -656,7 +656,7 @@ class TestRecalibrationWidensLimits:
         silently keep the old tight limits for the server lifetime."""
         robot = _FakeRobot()
         robot.calibration = _calibration(elbow_range=(1024, 3072))  # +/-90 deg
-        servicer = _make_servicer(robot, action_mode="pose_delta")
+        servicer = _make_servicer(robot, action_mode="pose_delta", elbow_max_deg=None)
         _connect(servicer)
         elbow = BODY_JOINTS.index("elbow_flex")
         _, hi_tight = _law_of(servicer).ik_solver.qpos_limits
@@ -667,6 +667,76 @@ class TestRecalibrationWidensLimits:
         _connect(servicer)
         _, hi = _law_of(servicer).ik_solver.qpos_limits
         assert hi[elbow] == pytest.approx(1.69)  # model range restored
+
+
+# ---------------------------------------------------------------------------
+# Slice 8 -- elbow over-fold hard wall (#05 bench finding, #07 mandate)
+# ---------------------------------------------------------------------------
+
+
+class TestElbowHardWall:
+    """The physical arm binds at ~+3-4 deg past the folded-rest calibration
+    zero (over-fold direction); the recorded calibration range overstates that
+    side.  The IK elbow ceiling must be cut to the wall so no solve commands
+    the arm into it (positive = over-fold, model qpos == normalised degrees)."""
+
+    def test_default_wall_caps_elbow_ceiling_at_two_deg(self):
+        robot = _FakeRobot()
+        robot.calibration = _calibration()  # +/-90 deg recorded
+        servicer = _make_servicer(robot, action_mode="pose_delta")
+        _connect(servicer)
+        lo, hi = _law_of(servicer).ik_solver.qpos_limits
+        elbow = BODY_JOINTS.index("elbow_flex")
+        assert hi[elbow] == pytest.approx(math.radians(2.0), abs=1e-6)
+        # The under-fold side keeps the measured calibration range.
+        half_span_rad = math.radians((3072 - 1024) / 2 * 360 / 4095)
+        assert lo[elbow] == pytest.approx(-half_span_rad, abs=1e-6)
+
+    def test_wall_wins_over_full_turn_calibration(self):
+        """A full-turn recording (+/-180 deg, the actual follower.json range
+        class #05 called wrong) still cannot widen past the wall."""
+        robot = _FakeRobot()
+        robot.calibration = _calibration(elbow_range=(0, 4095))
+        servicer = _make_servicer(robot, action_mode="pose_delta")
+        _connect(servicer)
+        _, hi = _law_of(servicer).ik_solver.qpos_limits
+        elbow = BODY_JOINTS.index("elbow_flex")
+        assert hi[elbow] == pytest.approx(math.radians(2.0), abs=1e-6)
+
+    def test_elbow_max_deg_none_disables_the_wall(self):
+        robot = _FakeRobot()
+        robot.calibration = _calibration()
+        servicer = _make_servicer(robot, action_mode="pose_delta", elbow_max_deg=None)
+        _connect(servicer)
+        _, hi = _law_of(servicer).ik_solver.qpos_limits
+        elbow = BODY_JOINTS.index("elbow_flex")
+        half_span_rad = math.radians((3072 - 1024) / 2 * 360 / 4095)
+        assert hi[elbow] == pytest.approx(half_span_rad, abs=1e-6)
+
+    def test_wall_survives_a_wider_recalibration(self):
+        robot = _FakeRobot()
+        robot.calibration = _calibration(elbow_range=(1024, 3072))
+        servicer = _make_servicer(robot, action_mode="pose_delta")
+        _connect(servicer)
+        robot.calibration = _calibration(elbow_range=(0, 4095))
+        robot.is_connected = False
+        _connect(servicer)
+        _, hi = _law_of(servicer).ik_solver.qpos_limits
+        elbow = BODY_JOINTS.index("elbow_flex")
+        assert hi[elbow] == pytest.approx(math.radians(2.0), abs=1e-6)
+
+    def test_ik_never_commands_the_elbow_past_the_wall(self):
+        """Behavioural: with a full-turn recording the solver may want elbow
+        past +2 deg, but the commanded joint action stays under the wall."""
+        robot = _FakeRobot()
+        robot.calibration = _calibration(elbow_range=(0, 4095))
+        servicer = _make_servicer(
+            robot, action_mode="pose_delta", workspace_radius_m=0.0
+        )
+        _connect(servicer)
+        servicer.SendAction(_action_request(servicer, _delta(dz=-0.20)), None)
+        sent = robot.sent_actions[-1]
+        assert sent["elbow_flex.pos"] <= 2.0 + 0.5
 
 
 # ---------------------------------------------------------------------------

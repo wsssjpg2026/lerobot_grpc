@@ -65,6 +65,11 @@ class ServeFollowerConfig:
     # deltas solved by the shared PoseDeltaLaw with the real-arm safety
     # posture -- base safety sphere / residual-hold / stale-hold / ~5mm slew).
     action_mode: str = "joint"
+    # Elbow over-fold hard wall (deg, positive = past the folded-rest
+    # calibration zero): the physical arm binds at ~+3-4 deg on that side
+    # (#05 bench); the IK elbow ceiling is cut to this value in pose_delta
+    # mode so no solve commands the arm into the wall.  None disables.
+    elbow_max_deg: float | None = 2.0
 
 
 @parser.wrap()
@@ -73,7 +78,10 @@ def main(cfg: ServeFollowerConfig):
 
     robot = SO101FollowerAdapted(cfg.robot)
     servicer = SO101FollowerServicer(
-        robot, camera_encoding=cfg.camera_encoding, action_mode=cfg.action_mode
+        robot,
+        camera_encoding=cfg.camera_encoding,
+        action_mode=cfg.action_mode,
+        elbow_max_deg=cfg.elbow_max_deg,
     )
     server = FollowerServer(FollowerServerConfig(address=cfg.address), servicer)
     server.start()
