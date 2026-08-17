@@ -209,6 +209,11 @@ class PoseDeltaLaw:
         joint action instead of walking toward an unreachable target.  None
         disables it (sim default -- preserves the apply+overshoot-limit
         behaviour).
+    escape_flipped_deg
+        Elbow angle (deg) below which the workspace escape treats a solve as
+        sign-flipped and re-seeds from the home posture.  Default -15 (sim:
+        sign vs the +60 home).  None disables the flip leg (the joint-limit
+        leg remains).
     max_reach_override_m
         Override the URDF-sampled max reach (e.g. with a calibration-derived
         value).  None -> sample from the model joint ranges.
@@ -238,6 +243,7 @@ class PoseDeltaLaw:
         elbow_floor_deg=None,
         gripper_max_distance_mm=60.0,
         workspace_escape=True,
+        escape_flipped_deg: float | None = -15.0,
         residual_hold_m=None,
         max_reach_override_m=None,
     ):
@@ -251,6 +257,14 @@ class PoseDeltaLaw:
         self._gripper_max_distance_mm = float(gripper_max_distance_mm)
         self._workspace_policy = workspace_policy
         self._workspace_escape = bool(workspace_escape)
+        # Elbow sign-flip leg of the workspace escape: sim semantics are
+        # sign-vs-the-+60-sim-home (-15 deg); an arm whose working range is
+        # entirely negative (the real follower's wall caps +2 deg) must re-base
+        # or disable it, or it fires every frame (#07).  None = flip leg off
+        # (the joint-limit leg of the escape stays active).
+        self._escape_flipped_deg = (
+            None if escape_flipped_deg is None else math.radians(float(escape_flipped_deg))
+        )
         self._residual_hold_m = None if residual_hold_m is None else float(residual_hold_m)
 
         # FK scratch (never the sim live data -- seeded from the qpos argument).
@@ -631,7 +645,10 @@ class PoseDeltaLaw:
         self._escaped = False
         if self._workspace_escape and len(self._home_rad) == self._n_body:
             elbow = 2
-            flipped = float(raw_rad[elbow]) < -math.radians(15.0)
+            flipped = (
+                self._escape_flipped_deg is not None
+                and float(raw_rad[elbow]) < self._escape_flipped_deg
+            )
             if flipped or self._at_joint_limit(raw_rad):
                 home_seed = np.zeros_like(seed)
                 home_seed[: len(self._home_rad)] = self._home_rad

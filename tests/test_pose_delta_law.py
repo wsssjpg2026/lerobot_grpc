@@ -177,6 +177,67 @@ class TestHolds:
         for j in BODY:
             assert held.joint_action[f"{j}.pos"] == fresh[f"{j}.pos"]
 
+
+class TestEscapeFlippedThreshold:
+    """escape_flipped_deg parameterises the elbow sign-flip leg of the
+    workspace escape (sim default -15 deg, i.e. sign-vs-the-+60-sim-home).
+    None disables the flip leg entirely -- the joint-limit leg stays.  The
+    real arm's whole working range is negative elbow (#07: the wall caps
+    +2 deg), so a sim-sign threshold would fire every frame mid-work."""
+
+    def _law_with(self, escape_flipped_deg, home_deg=HOME_DEG):
+        return PoseDeltaLaw(
+            _model(),
+            site_name="gripperframe",
+            body_dofs=[0, 1, 2, 3, 4],
+            body_joint_names=BODY,
+            home_joints_deg=home_deg,
+            workspace_policy=ClearanceBubble(),
+            workspace_radius_m=0.0,
+            position_deadband_m=0.0,
+            rotation_deadband_rad=0.0,
+            escape_flipped_deg=escape_flipped_deg,
+        )
+
+    def _droop_elbow_qpos(self, elbow_deg: float) -> np.ndarray:
+        q = _home_qpos()
+        q[2] = np.radians(elbow_deg)
+        return q
+
+    def test_default_threshold_triggers_on_sim_sign_flip(self):
+        law = self._law_with(escape_flipped_deg=-15.0)
+        qpos = self._droop_elbow_qpos(-20.0)
+        law.lock_reference(qpos)
+        law.solve(_delta(0.01), qpos)
+        assert law.escaped, "elbow -20 deg is 'flipped' vs the sim home (+60)"
+
+    def test_none_disables_the_flip_leg(self):
+        law = self._law_with(escape_flipped_deg=None)
+        qpos = self._droop_elbow_qpos(-20.0)
+        law.lock_reference(qpos)
+        law.solve(_delta(0.01), qpos)
+        assert not law.escaped, "flip leg off: a negative-elbow solve is normal"
+
+    def test_custom_threshold_moves_the_trip_point(self):
+        # Home AT the seed posture so the nullspace rest task cannot drag the
+        # solve across the threshold -- the trip point alone decides.
+        law = self._law_with(
+            escape_flipped_deg=-60.0, home_deg=(0.0, -20.0, -20.0, -40.0, 0.0)
+        )
+        qpos = self._droop_elbow_qpos(-20.0)
+        law.lock_reference(qpos)
+        law.solve(_delta(0.01), qpos)
+        assert not law.escaped, "-20 deg is above the -60 deg threshold"
+
+    def test_custom_threshold_still_trips_deep_extension(self):
+        law = self._law_with(
+            escape_flipped_deg=-60.0, home_deg=(0.0, -20.0, -65.0, -40.0, 0.0)
+        )
+        qpos = self._droop_elbow_qpos(-65.0)
+        law.lock_reference(qpos)
+        law.solve(_delta(0.01), qpos)
+        assert law.escaped, "-65 deg is below the -60 deg threshold"
+
     def test_residual_hold_returns_last_when_unreachable(self):
         # residual hold on; with the bubble off, a target far beyond reach
         # genuinely cannot be reached -> the law holds the previous action.

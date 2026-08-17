@@ -25,11 +25,13 @@ mujoco = pytest.importorskip("mujoco")  # Any-typed: no py.typed upstream
 from lerobot.motors import MotorCalibration  # noqa: E402
 from lerobot_robot_grpc.follower.mujoco_follower_server import (  # noqa: E402
     BODY_JOINTS,
+    HOME_JOINTS_DEG,
     JOINTS,
     MuJoCoSO101Servicer,
 )
 from lerobot_robot_grpc.follower.pose_delta_law import BaseSafetySphere  # noqa: E402
 from lerobot_robot_grpc.follower.so101_follower_server import (  # noqa: E402
+    REAL_REST_POSTURE_DEG,
     SO101FollowerServicer,
 )
 from lerobot_robot_grpc.pose_delta_schema import ACTION_KEYS  # noqa: E402
@@ -567,8 +569,11 @@ def _drain_observation(servicer, max_ticks):
 class TestCharacterizationRealServicer:
     def test_protobuf_send_action_then_observation_reads_back(self):
         """End-to-end on the public surface: a wire-format pose_delta action
-        moves the arm; the observation stream reads the new joints back."""
-        robot = _FakeRobot()
+        moves the arm; the observation stream reads the new joints back.
+        Seeded at the measured R1 droop pose -- a REAL-reachable park (the
+        sim HOME_POS elbow +60 sits past the over-fold wall, so the real
+        adapter's default rest posture biases solves away from it)."""
+        robot = _FakeRobot(DROOP_POS)
         servicer = _make_servicer(
             robot, action_mode="pose_delta", workspace_radius_m=0.0
         )
@@ -580,7 +585,7 @@ class TestCharacterizationRealServicer:
             assert obs[f"{j}.pos"] == pytest.approx(
                 robot.sent_actions[0][f"{j}.pos"], abs=1e-6
             )
-        moved = _fk_of_commanded(obs) - _independent_fk_pos(HOME_POS)
+        moved = _fk_of_commanded(obs) - _independent_fk_pos(DROOP_POS)
         np.testing.assert_allclose(moved, [0.010, 0.0, 0.0], atol=2e-3)
 
 
@@ -858,3 +863,87 @@ def test_calibrate_never_touches_bus_outside_the_lock():
     bus.release.set()
     obs_thread.join(timeout=5.0)
     assert not obs_thread.is_alive()
+
+
+# ---------------------------------------------------------------------------
+# Slice 9 -- real IK rest posture: the R1 droop-freeze fix (#07)
+# ---------------------------------------------------------------------------
+
+# R1 measured gravity-droop park pose (CSV last row, deg / 0-100): near
+# singular (manip 0.0138), elbow riding the over-fold wall.
+DROOP_POS = {
+    "shoulder_pan": 6.286,
+    "shoulder_lift": -2.418,
+    "elbow_flex": 1.099,
+    "wrist_flex": 46.418,
+    "wrist_roll": -5.582,
+    "gripper": 0.943,
+}
+
+
+class TestRealRestPosture:
+    """R1 freeze root cause: the law's rest posture (nullspace attractor +
+    limit-escape re-seed) was the sim home with elbow +60 deg -- unreachable
+    on the real arm (over-fold wall at +2 deg), so every solve pinned into the
+    wall/singularity and the body froze while the gripper followed.
+
+    The real adapter defaults to a reachable mid-range rest posture instead.
+    It is solver bias ONLY -- the arm is never commanded there (Connect and
+    SetReference write nothing; teleop starts from the unpowered droop pose
+    the user parks the arm in)."""
+
+    def test_real_default_rest_is_reachable_not_sim_home(self):
+        servicer = _make_servicer(action_mode="pose_delta")
+        law = _law_of(servicer)
+        assert law._home_joints_deg == REAL_REST_POSTURE_DEG
+        assert REAL_REST_POSTURE_DEG != HOME_JOINTS_DEG
+
+    def test_sim_adapter_keeps_the_sim_home(self):
+        servicer = MuJoCoSO101Servicer(
+            xml_path=str(XML_PATH), action_mode="pose_delta", render=False
+        )
+        assert servicer._law is not None
+        assert servicer._law._home_joints_deg == HOME_JOINTS_DEG
+
+    def test_rest_lies_within_wall_tightened_limits(self):
+        """The rest posture must be INSIDE the effective limits the real arm
+        solves under (measured calibration intersected with the elbow wall)."""
+        robot = _FakeRobot()
+        robot.calibration = _calibration(elbow_range=(0, 4095))  # full turn + wall
+        servicer = _make_servicer(robot, action_mode="pose_delta")
+        _connect(servicer)
+        lo, hi = _law_of(servicer).ik_solver.qpos_limits
+        rest = np.radians(np.asarray(REAL_REST_POSTURE_DEG, dtype=float))
+        assert np.all(rest >= lo)
+        assert np.all(rest <= hi)
+        elbow = BODY_JOINTS.index("elbow_flex")
+        assert rest[elbow] <= math.radians(2.0)  # under the over-fold wall
+
+    def test_droop_seed_tracks_the_intent(self):
+        """Behavioural regression of the R1 freeze: arm parked at the measured
+        droop pose, full-turn calibration + default wall, a 15 mm x intent --
+        the commanded FK must land ON the intent.  With the old sim-home rest
+        the solve pinned ~27 mm off the intent and froze there (body frozen,
+        gripper following)."""
+        robot = _FakeRobot(DROOP_POS)
+        robot.calibration = _calibration(elbow_range=(0, 4095))
+        servicer = _make_servicer(
+            robot, action_mode="pose_delta", workspace_radius_m=0.0
+        )
+        _connect(servicer)
+        for _ in range(6):
+            servicer.SendAction(_action_request(servicer, _delta(dx=0.015)), None)
+        target = _independent_fk_pos(DROOP_POS) + np.array([0.015, 0.0, 0.0])
+        cmd_fk = _fk_of_commanded(robot.sent_actions[-1])
+        assert float(np.linalg.norm(cmd_fk - target)) < 0.005
+
+    def test_real_adapter_wires_solver_bias_params(self):
+        """No reachable home to snap back to: the near-reference rest gain
+        matches the far gain (the sim's 0.40 snap would crawl a real arm),
+        and the elbow-flip escape threshold is re-based -- the sim's -15 deg
+        (sign vs the +60 sim home) sits inside the real arm's all-negative
+        working range and would fire every frame."""
+        servicer = _make_servicer(action_mode="pose_delta")
+        law = _law_of(servicer)
+        assert law._home_rest_gain == pytest.approx(0.08)
+        assert law._escape_flipped_deg == pytest.approx(math.radians(-60.0))

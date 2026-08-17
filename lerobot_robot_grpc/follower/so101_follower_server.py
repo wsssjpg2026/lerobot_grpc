@@ -69,6 +69,27 @@ _DEFAULT_KINEMATICS_XML = (
     Path(__file__).resolve().parents[2] / "assets" / "so101" / "scene.xml"
 )
 
+# Solver-bias rest posture for the REAL arm's pose_delta law (#07).
+#
+# This is NOT a pose the arm is ever commanded to -- Connect/SetReference
+# write nothing and teleop starts from whatever unpowered droop pose the
+# user parks the arm in.  It is where the DLS nullspace rest task and the
+# limit-escape re-seed point, and it must be REACHABLE: the sim home
+# (elbow +60 deg) sits past the real over-fold wall (+2 deg), so with it
+# every solve pinned into the wall/singularity and the R1 bench froze with
+# the body immovable while the gripper followed (residual 26.8 mm > 18 mm
+# hold, manip 0.0133 at the droop).
+#
+# Chosen offline (lrg, /tmp/rest_scan.py, 2026-08-17) under the effective
+# limits (model n follower.json calibration n elbow wall +2 deg), against
+# the measured R1 droop seed (pan 6.3 / lift -2.4 / elbow +1.1 / wf +46.4 /
+# wr -5.6): manip 0.0134, FK radius 463 mm, all six 15 mm axis intents
+# tracked 14.8-15.2 mm at <= 0.3 mm residual with zero holds/escapes, and
+# commanded elbows stay -2.0..+1.2 deg (off the +2 wall, no limit-saturation
+# escape churn).  The old sim home under the same drive tracked nothing
+# (held 29/30 frames, residual ~27 mm).
+REAL_REST_POSTURE_DEG: tuple[float, ...] = (0.0, 30.0, -20.0, 0.0, 0.0)
+
 
 def _protobuf_type_for(python_type: type) -> device_pb2.DataType:
     """Maps a Python type to the corresponding protobuf DataType."""
@@ -193,7 +214,7 @@ class SO101FollowerServicer(FollowerServicer):
         calibration_timeout_s: float = 300.0,
         bus_call_timeout_s: float = 5.0,
         action_mode: str = "joint",
-        home_joints_deg: tuple[float, ...] = HOME_JOINTS_DEG,
+        home_joints_deg: tuple[float, ...] = REAL_REST_POSTURE_DEG,
         workspace_sphere_ratio: float = 0.72,
         residual_hold_m: float = 0.018,
         max_reach_override_m: float | None = 0.543,
@@ -202,6 +223,8 @@ class SO101FollowerServicer(FollowerServicer):
         max_dq_deg: float = 4.0,
         gripper_max_distance_mm: float = DEFAULT_GRIPPER_MAX_DISTANCE_MM,
         elbow_max_deg: float | None = 2.0,
+        home_rest_gain: float = 0.08,
+        escape_flipped_deg: float | None = -60.0,
     ):
         self.robot = robot
         if camera_encoding not in ("jpeg", "h264"):
@@ -248,6 +271,14 @@ class SO101FollowerServicer(FollowerServicer):
                 residual_hold_m=residual_hold_m,
                 max_reach_override_m=max_reach_override_m,
                 gripper_max_distance_mm=gripper_max_distance_mm,
+                # Real solver bias (#07): no reachable home exists to snap
+                # back to, so the near-reference rest gain matches the far
+                # gain (the sim's 0.40 snap would crawl a real arm); and the
+                # elbow-flip escape threshold is re-based to deep extension --
+                # the sim's -15 deg sits inside the real all-negative working
+                # range and would fire every frame.
+                home_rest_gain=home_rest_gain,
+                escape_flipped_deg=escape_flipped_deg,
             )
         # Stale-hold (real-only): wall-clock of the last pose_delta SendAction;
         # a gap > stale_timeout_s makes the next solve hold the last joints.
