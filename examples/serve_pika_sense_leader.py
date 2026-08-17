@@ -106,6 +106,13 @@ def main():
         help="Directory for calibration files (default: ~/.cache/huggingface/lerobot/"
         "calibration/teleoperators/pika_sense/)",
     )
+    parser.add_argument(
+        "--auto-reference",
+        action="store_true",
+        help="Latch T_begin and engage on Connect, for clients without an alignment "
+        "step (e.g. lerobot-teleoperate). NOTE: the clutch gesture still freezes "
+        "the publish in this mode and nobody re-latches — resume by reconnecting.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -128,6 +135,7 @@ def main():
         gripper_rate_mm_s=args.gripper_rate_mm_s,
         calibration_dir=args.calibration_dir,
         device_id=args.device_id,
+        auto_reference=args.auto_reference,
     )
     server = LeaderServer(LeaderServerConfig(address=args.address), servicer)
     server.start()

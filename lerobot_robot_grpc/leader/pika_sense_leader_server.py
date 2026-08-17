@@ -374,6 +374,16 @@ class PikaSenseServicer(LeaderServicer):
         Callable returning the Pika button command state (0/1) or ``None``.
         Defaults to ``device.get_command_state``; injectable so the clutch
         state machine (#10) is testable without hardware.
+    auto_reference
+        When True, latch ``T_begin`` and engage on Connect (with a lazy
+        fallback on the first action if the solver had not converged by
+        then).  For clients without an alignment step — e.g.
+        ``lerobot-teleoperate`` — which never call ``SetReference``; without
+        a latch such a session publishes zero deltas forever.  Default False
+        keeps the #10 contract: the session starts disengaged and the
+        client's ``SetReference`` is what engages teleop.  In this mode the
+        clutch gesture still freezes the publish, but nobody sends the
+        re-engage ``SetReference`` — resume means reconnecting.
     """
 
     # Multi-step calibration sequence for the StreamCalibration protocol.
@@ -406,6 +416,7 @@ class PikaSenseServicer(LeaderServicer):
         R_lh2base: np.ndarray | None = None,
         calibration_dir: str | None = None,
         command_state_provider=None,
+        auto_reference: bool = False,
         device_id: str = "pika_sense",
     ):
         # Deferred import — the Pika SDK is an optional dependency.
@@ -447,6 +458,10 @@ class PikaSenseServicer(LeaderServicer):
         self._lock = threading.Lock()
         self._connected = False
         self._tracker_device: str | None = None
+
+        # auto_reference mode (see class docstring): latch + engage without a
+        # client SetReference, for clients without an alignment step.
+        self._auto_reference = bool(auto_reference)
 
         # Latch-once state.  T_begin is locked by SetReference; the published
         # offset is the slew-limited current displacement from that latch.
@@ -821,6 +836,11 @@ class PikaSenseServicer(LeaderServicer):
             if command_now is not None:
                 self._prev_command_state = command_now
 
+            if self._auto_reference and self._t_begin_pos is None and tracker is not None:
+                # Lazy fallback: Connect could not latch (solver still
+                # converging) — latch at the first tracker sample instead.
+                self._auto_latch(tracker)
+
             jumped = False
             pos_now = self._filt_position if self._filt_position is not None else np.zeros(3)
             rot_now = self._filt_rotation if self._filt_rotation is not None else np.eye(3)
@@ -1037,6 +1057,13 @@ class PikaSenseServicer(LeaderServicer):
             self._clutched = False
             self._pending_relatch = False
             self._prev_command_state = None
+            if self._auto_reference:
+                # Clients without an alignment step never call SetReference;
+                # latch at the Connect pose so deltas flow from session start.
+                # If the solver had not converged yet, _compute_action retries.
+                tracker = self._read_tracker_pose()
+                if tracker is not None:
+                    self._auto_latch(tracker)
             if not self._calibrated:
                 self._calib_step = 0
                 self._calib_data = {}
@@ -1128,6 +1155,24 @@ class PikaSenseServicer(LeaderServicer):
         )
 
     # --- alignment ---
+
+    def _auto_latch(self, tracker) -> None:
+        """Latch ``T_begin`` at the given raw tracker pose and engage.
+
+        ``auto_reference`` mode's counterpart of ``SetReference``: the same
+        state transitions minus the RPC.  Callers hold ``_lock`` and pass the
+        current ``_read_tracker_pose()`` result.
+        """
+        self._t_begin_pos = tracker[0].copy()
+        self._t_begin_rot = tracker[1].copy()
+        self._published_pos = np.zeros(3)
+        self._published_rot = np.eye(3)
+        self._reset_pose_filter()
+        self._clutched = True
+        self._pending_relatch = False
+        logger.info(
+            "AUTO-REFERENCE: T_begin latched at current pose — teleop engaged."
+        )
 
     def SetReference(self, request, context):
         """Lock T_begin at the current tracker pose, zero the offset, engage.
