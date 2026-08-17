@@ -31,9 +31,11 @@ from lerobot_robot_grpc.follower.joint_smoke import (
     ScanStep,
     SkipStep,
     build_scan_steps,
+    check_base_headroom,
     evaluate_dwell,
     evaluate_freeze,
     limits_from_raw_ranges,
+    retrying_rpc,
 )
 
 DEFAULT_CALIBRATION = (
@@ -50,9 +52,27 @@ def _load_limits(path: Path) -> dict[str, tuple[float, float]]:
     return limits_from_raw_ranges(ranges)
 
 
+def _reconnect(client: GRPCFollower) -> None:
+    try:
+        client.disconnect()
+    except Exception:
+        pass  # server may already see us gone; channel cleanup is best-effort
+    client.connect(calibrate=False)
+
+
 def _obs_joints(client: GRPCFollower) -> dict[str, float]:
-    obs = client.get_observation()
+    def _note(e: BaseException) -> None:
+        print("  [reconnect] observation failed (" + repr(e)[:120] + "), retrying")
+    obs = retrying_rpc(lambda: client.get_observation(),
+                       reconnect=lambda: _reconnect(client), on_retry=_note)
     return {j: float(obs[j + ".pos"]) for j in (*BODY_SCAN_ORDER, "gripper")}
+
+
+def _send(client: GRPCFollower, action: dict[str, float]) -> None:
+    def _note(e: BaseException) -> None:
+        print("  [reconnect] send failed (" + repr(e)[:120] + "), retrying")
+    retrying_rpc(lambda: client.send_action(action),
+                 reconnect=lambda: _reconnect(client), on_retry=_note)
 
 
 def _dwell(client: GRPCFollower, seconds: float) -> list[dict[str, float]]:
@@ -118,7 +138,7 @@ def run_scan(args) -> int:
         key = step.joint + ".pos"
         label = step.joint + format(step.direction * step.tier_deg, "+.0f")
         print("step " + str(idx) + ": " + label + " -> " + format(step.target_deg, ".1f"))
-        client.send_action({key: step.target_deg})
+        _send(client, {key: step.target_deg})
         go = _dwell(client, args.dwell_s)
         log(go, "scan", label)
         res = evaluate_dwell([r[step.joint] for r in go], step.target_deg)
@@ -128,7 +148,7 @@ def run_scan(args) -> int:
               + (" PASS" if res.passed else " FAIL"))
         if not res.passed:
             failures.append(label + "-go")
-        client.send_action({key: base[step.joint]})
+        _send(client, {key: base[step.joint]})
         back = _dwell(client, args.dwell_s)
         log(back, "scan", label + "-return")
         res = evaluate_dwell([r[step.joint] for r in back], base[step.joint])
@@ -141,11 +161,11 @@ def run_scan(args) -> int:
         baseline_rows = back
 
     print("=== gripper cycle 0 -> 100 -> original ===")
-    client.send_action({"gripper.pos": 0.0})
+    _send(client, {"gripper.pos": 0.0})
     log(_dwell(client, args.dwell_s), "gripper", "close")
-    client.send_action({"gripper.pos": 100.0})
+    _send(client, {"gripper.pos": 100.0})
     log(_dwell(client, args.dwell_s), "gripper", "open")
-    client.send_action({"gripper.pos": base["gripper"]})
+    _send(client, {"gripper.pos": base["gripper"]})
     log(_dwell(client, args.dwell_s), "gripper", "return")
 
     print("================ SUMMARY ================")
@@ -162,6 +182,41 @@ def run_scan(args) -> int:
             time.sleep(60)
     except KeyboardInterrupt:
         return 1 if failures else 0
+
+def run_preflight(args) -> int:
+    """Base-pose gate before any scan: >= required headroom both ways per joint.
+
+    Calibrated limits proved insufficient on the real arm (round 1: elbow
+    parked on a mechanical wall inside a +/-180 deg calibrated range), so
+    --measured-travel takes hand-measured free travel from the CURRENT pose
+    as JSON of room magnitudes in deg, e.g. '{"elbow_flex": [40, 30]}' =
+    40 deg available toward minus, 30 toward plus.
+    """
+    limits = _load_limits(Path(args.calibration))
+    measured = json.loads(args.measured_travel) if args.measured_travel else None
+    client = GRPCFollower(GRPCFollowerConfig(address=args.address, need_warmup=False))
+    client.connect(calibrate=False)
+    base = _obs_joints(client)
+    print("base pose (deg):", {k: round(v, 1) for k, v in base.items()})
+    results = check_base_headroom(base, limits, measured,
+                                  required_deg=args.required_headroom_deg)
+    all_ok = True
+    for r in results:
+        travel = "        n/a" if r.travel_deg is None \
+            else format(r.travel_deg[0], "+7.1f") + format(r.travel_deg[1], "+7.1f")
+        print("  " + r.joint.ljust(13)
+              + " cal " + format(r.headroom_deg[0], "+7.1f") + format(r.headroom_deg[1], "+7.1f")
+              + "  hand" + travel
+              + "  min " + format(r.min_headroom_deg, "+7.1f")
+              + "  " + ("PASS" if r.passed else "FAIL"))
+        if r.travel_deg is None:
+            print("    note: no hand-measured travel for " + r.joint
+                  + " -- calibrated limits only (mechanical walls invisible)")
+        all_ok = all_ok and r.passed
+    print("PREFLIGHT " + ("PASS (>= " + format(args.required_headroom_deg, ".0f")
+                          + " deg both ways everywhere)" if all_ok else "FAIL -- reposition the arm"))
+    return 0 if all_ok else 1
+
 
 def run_observe(args) -> int:
     """Post-kill observation: 3 s of joint samples; drift vs first sample."""
@@ -184,7 +239,7 @@ def run_observe(args) -> int:
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--mode", choices=["scan", "observe"], default="scan")
+    p.add_argument("--mode", choices=["preflight", "scan", "observe"], default="scan")
     p.add_argument("--address", default="127.0.0.1:5555")
     p.add_argument("--calibration", default=str(DEFAULT_CALIBRATION))
     p.add_argument("--out-csv", default="/tmp/joint_smoke_" + str(int(time.time())) + ".csv")
@@ -192,9 +247,15 @@ def main() -> int:
     p.add_argument("--margin-deg", type=float, default=5.0)
     p.add_argument("--dwell-s", type=float, default=2.0)
     p.add_argument("--silence-fraction", type=float, default=0.5)
+    p.add_argument("--measured-travel", default="",
+                   help="JSON {joint: [minus_room_deg, plus_room_deg]} hand-measured"
+                        " free travel from the current pose (preflight only)")
+    p.add_argument("--required-headroom-deg", type=float, default=15.0)
     args = p.parse_args()
     if args.mode == "observe":
         return run_observe(args)
+    if args.mode == "preflight":
+        return run_preflight(args)
     return run_scan(args)
 
 

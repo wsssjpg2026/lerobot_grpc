@@ -178,3 +178,90 @@ def evaluate_freeze(
     ref = sum(baseline_deg) / len(baseline_deg)
     drift = max(abs(s - ref) for s in silence_deg)
     return FreezeResult(drift <= tol_deg, drift)
+
+
+@dataclass(frozen=True)
+class PreflightResult:
+    """Base-pose headroom verdict for one joint, before any smoke step runs."""
+
+    joint: str
+    headroom_deg: tuple[float, float]  # room (toward lo, toward hi), deg magnitudes
+    travel_deg: tuple[float, float] | None  # hand-measured room (minus, plus)
+    min_headroom_deg: float  # worst direction over every check that applied
+    passed: bool
+
+
+def check_base_headroom(
+    base_deg: Mapping[str, float],
+    limits: Mapping[str, tuple[float, float]],
+    measured_travel_deg: Mapping[str, tuple[float, float]] | None = None,
+    required_deg: float = 15.0,
+) -> list[PreflightResult]:
+    """Guard against starting a scan from a pose sitting on a hard wall.
+
+    Round 1 of the real-arm smoke found the elbow parked at an unmodelled
+    mechanical end-stop while its calibrated range read +/-180 deg -- the
+    per-step pre-check alone cannot catch that.  The base pose must have
+    >= required_deg room in BOTH directions for every body joint, against
+    the calibrated limits and, when the human hand-measured the free travel
+    from the current pose, against that too (room magnitudes in deg:
+    (toward minus, toward plus)).  A joint with no calibrated limit fails
+    outright: an untrusted limit must never pass.
+    """
+    results: list[PreflightResult] = []
+    for joint in BODY_SCAN_ORDER:
+        lim = limits.get(joint)
+        if lim is None:
+            results.append(PreflightResult(
+                joint, (float("-inf"), float("-inf")), None, float("-inf"), False))
+            continue
+        lo, hi = lim
+        headroom = (base_deg[joint] - lo, hi - base_deg[joint])
+        travel = None
+        if measured_travel_deg is not None and joint in measured_travel_deg:
+            room_minus, room_plus = measured_travel_deg[joint]
+            travel = (float(room_minus), float(room_plus))
+        checks = [*headroom, *(travel if travel is not None else ())]
+        results.append(PreflightResult(
+            joint, headroom, travel, min(checks), min(checks) >= required_deg))
+    return results
+
+
+import time  # noqa: E402
+from collections.abc import Callable  # noqa: E402
+from typing import TypeVar  # noqa: E402
+
+T = TypeVar("T")
+
+
+def retrying_rpc(
+    fn: Callable[[], T],
+    reconnect: Callable[[], None],
+    attempts: int = 3,
+    settle_s: float = 1.0,
+    sleep: Callable[[float], None] = time.sleep,
+    on_retry: Callable[[BaseException], None] | None = None,
+) -> T:
+    """Run one RPC, healing a server-side robot drop with reconnect + retry.
+
+    A camera-thread death on the server flips the robot's is_connected and
+    fails every RPC until the next Connect (#05 round 1: "read thread is not
+    running" -> "is not connected"); a client-side reconnect heals it.  Both
+    call sites are retry-safe: send_action re-sends the same absolute target,
+    get_observation is a read.  A failing reconnect is swallowed -- the next
+    attempt re-runs it; the original RPC error is what propagates in the end.
+    """
+    for attempt in range(attempts):
+        try:
+            return fn()
+        except Exception as e:  # noqa: BLE001 -- gRPC surfaces as plain RpcError
+            if attempt == attempts - 1:
+                raise
+            if on_retry is not None:
+                on_retry(e)
+            try:
+                reconnect()
+            except Exception:  # noqa: BLE001 -- retried on the next loop pass
+                pass
+            sleep(settle_s)
+    raise AssertionError("unreachable")

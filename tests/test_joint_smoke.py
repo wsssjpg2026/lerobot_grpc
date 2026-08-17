@@ -170,3 +170,98 @@ class TestEvaluateFreeze:
         res = evaluate_freeze(baseline, silence)
         assert not res.passed
         assert res.max_drift_deg == pytest.approx(0.8, abs=0.01)
+
+from lerobot_robot_grpc.follower.joint_smoke import (  # noqa: E402
+    check_base_headroom,
+    retrying_rpc,
+)
+
+
+class TestCheckBaseHeadroom:
+    LIMITS = {j: (-90.0, 90.0) for j in BODY_SCAN_ORDER}
+    BASE = {j: 0.0 for j in BODY_SCAN_ORDER}
+
+    def _joint(self, results, name):
+        return next(r for r in results if r.joint == name)
+
+    def test_mid_range_passes_everywhere(self):
+        results = check_base_headroom(self.BASE, self.LIMITS)
+        assert len(results) == len(BODY_SCAN_ORDER)
+        assert all(r.passed for r in results)
+        assert all(r.min_headroom_deg == pytest.approx(90.0) for r in results)
+
+    def test_round1_elbow_wall_fails_via_hand_travel(self):
+        # Calibrated range +/-90 says room to spare, but the hand test found
+        # the elbow parked ON a wall: 1 deg of room up, 40 down.  Must fail.
+        measured = {"elbow_flex": (40.0, 1.0)}
+        results = check_base_headroom(self.BASE, self.LIMITS, measured)
+        elbow = self._joint(results, "elbow_flex")
+        assert not elbow.passed
+        assert elbow.min_headroom_deg == pytest.approx(1.0)
+        assert elbow.travel_deg == (40.0, 1.0)
+
+    def test_short_travel_in_either_direction_fails(self):
+        measured = {"wrist_flex": (8.0, 50.0)}  # 8 < 15 required
+        results = check_base_headroom(self.BASE, self.LIMITS, measured)
+        assert not self._joint(results, "wrist_flex").passed
+
+    def test_calibrated_wall_fails_without_hand_data(self):
+        base = dict(self.BASE, wrist_roll=85.0)  # only 5 deg to calibrated hi
+        results = check_base_headroom(base, self.LIMITS)
+        wr = self._joint(results, "wrist_roll")
+        assert not wr.passed
+        assert wr.travel_deg is None
+
+    def test_missing_limit_fails_never_passes(self):
+        limits = {k: v for k, v in self.LIMITS.items() if k != "shoulder_pan"}
+        results = check_base_headroom(self.BASE, limits)
+        pan = self._joint(results, "shoulder_pan")
+        assert not pan.passed
+        assert pan.min_headroom_deg == float("-inf")
+
+    def test_custom_required_deg(self):
+        measured = {"elbow_flex": (12.0, 40.0)}
+        results = check_base_headroom(self.BASE, self.LIMITS, measured, required_deg=10.0)
+        assert self._joint(results, "elbow_flex").passed
+
+
+class TestRetryingRpc:
+    @staticmethod
+    def _no_sleep(_s: float) -> None:
+        pass
+
+    def test_success_first_try_never_reconnects(self):
+        def reconnect():
+            raise AssertionError("healthy RPC must not trigger reconnect")
+        assert retrying_rpc(lambda: 42, reconnect, sleep=self._no_sleep) == 42
+
+    def test_camera_death_heals_after_one_reconnect(self):
+        state = {"failing": True, "reconnects": 0}
+        notes: list[BaseException] = []
+
+        def fn():
+            if state["failing"]:
+                state["failing"] = False
+                raise RuntimeError("read thread is not running")
+            return "ok"
+
+        def reconnect():
+            state["reconnects"] += 1
+
+        assert retrying_rpc(fn, reconnect, sleep=self._no_sleep,
+                            on_retry=notes.append) == "ok"
+        assert state["reconnects"] == 1 and len(notes) == 1
+
+    def test_exhausted_attempts_reraise_original(self):
+        def fn():
+            raise RuntimeError("still down")
+        with pytest.raises(RuntimeError, match="still down"):
+            retrying_rpc(fn, lambda: None, attempts=3, sleep=self._no_sleep)
+
+    def test_failing_reconnect_does_not_mask_original(self):
+        def fn():
+            raise RuntimeError("rpc down")
+        def reconnect():
+            raise RuntimeError("reconnect also down")
+        with pytest.raises(RuntimeError, match="rpc down"):
+            retrying_rpc(fn, reconnect, attempts=2, sleep=self._no_sleep)
