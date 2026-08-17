@@ -129,7 +129,7 @@ def pre_pose(robot: GRPCFollower, args) -> None:
     """
     import mujoco
     import numpy as np
-    from scipy.spatial.transform import Rotation as Rot
+    from lerobot.utils.rotation import Rotation as Rot  # scipy-free, same API as the law
 
     from lerobot_robot_grpc.follower.hitl_bench import (
         _GRIPPER_RAD_MAX,
