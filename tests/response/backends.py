@@ -84,11 +84,16 @@ class FollowerBackend(ABC):
 class SimFollowerBackend(FollowerBackend):
     """In-process MuJoCo servicer + real gRPC server on a random port."""
 
-    name = "sim"
     law_spy_available = True
 
-    def __init__(self, xml_path: Path | str = XML_PATH):
+    def __init__(self, xml_path: Path | str = XML_PATH, rot_weight: float | None = None):
         self.xml_path = str(xml_path)
+        # Sweep hook (B-2 comparison): rot_weight forwarded to the servicer
+        # (same parameter examples/serve_mujoco_follower.py exposes as
+        # --rot-weight).  None = the servicer default (0.3).  The backend
+        # name carries the override so report directories stay distinct.
+        self.rot_weight = rot_weight
+        self.name = "sim" if rot_weight is None else f"sim_rw{rot_weight:g}"
         self.servicer = None
         self.server = None
         self.client: GRPCFollower | None = None
@@ -104,10 +109,14 @@ class SimFollowerBackend(FollowerBackend):
             MuJoCoSO101Servicer,
         )
 
+        kwargs = {}
+        if self.rot_weight is not None:
+            kwargs["rot_weight"] = self.rot_weight
         self.servicer = MuJoCoSO101Servicer(
             xml_path=self.xml_path,
             action_mode="pose_delta",
             render=False,
+            **kwargs,
         )
         self._install_law_spy(self.servicer._law)
 

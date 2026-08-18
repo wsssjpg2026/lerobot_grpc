@@ -25,7 +25,12 @@ from .report import ReportCollector
 def _make_backend():
     kind = os.environ.get("RESPONSE_TEST_BACKEND", "sim").strip().lower()
     if kind == "sim":
-        backend = SimFollowerBackend()
+        # Optional sweep hook: RESPONSE_SIM_ROT_WEIGHT=0.09 runs the whole
+        # baseline at a non-default DLS rotation weight (B-2 comparison);
+        # unset = the servicer default (0.3).
+        rw_env = os.environ.get("RESPONSE_SIM_ROT_WEIGHT", "").strip()
+        rot_weight = float(rw_env) if rw_env else None
+        backend = SimFollowerBackend(rot_weight=rot_weight)
         backend.start()
         return backend
     if kind == "real":
