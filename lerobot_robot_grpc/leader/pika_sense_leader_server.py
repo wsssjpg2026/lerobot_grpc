@@ -4,7 +4,7 @@ Wraps the Pika Sense device (Vive Tracker + gripper sensor) as a
 :class:`LeaderServicer` that produces pose-delta actions.  After
 :meth:`SetReference` the servicer publishes the **current raw relative
 transform** from that latch — 1:1, unfiltered (PikaAnyArm official leader
-semantics; see .scratch/pika-sense-real/align-official-decisions.md):
+semantics):
 
     Δ = inv(T_tracker_ref) @ T_tracker_now
     Δp = R_ref^T @ (p_now − p_ref)     # body frame of the reference latch

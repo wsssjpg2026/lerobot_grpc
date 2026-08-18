@@ -2,7 +2,7 @@
 """Offline replay of a recorded leader-delta CSV through the follower law.
 
 Acceptance harness for the PikaAnyArm official alignment
-(.scratch/pika-sense-real/align-official-decisions.md decision 1): feed a
+(decision 1): feed a
 bench-recorded leader stream (teleop_hitl_bench.py CSV, act_d* columns)
 frame-by-frame through the shared PoseDeltaLaw in a MuJoCo oracle loop —
 no hardware, the solved joints are written straight back as the next

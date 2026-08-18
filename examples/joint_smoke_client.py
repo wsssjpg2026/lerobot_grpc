@@ -1,6 +1,6 @@
 """Joint-smoke gate client -- HITL, drives a REAL SO-101 over gRPC (#05).
 
-Protocol locked in .scratch/pika-sense-real/issues/05-joint-smoke-gate.md:
+Protocol locked in issue #05:
 server joint mode; base pose = power-on pose (never HOME); per joint
 shoulder_pan..wrist_roll +/-5 then +/-10 with 5deg-margin pre-check (skip,
 never clip); gripper 0->100->original; stream-cut mid-scan 3s + kill -9.

@@ -38,8 +38,7 @@ Follower safety stack (PikaAnyArm piper_IK mechanisms, sim + real identical):
    visual-only).  A future robot XML with collision geometry enables it
    with no code change.
 
-Kept from the previous stack (official-equivalent or bench UX, see
-.scratch/pika-sense-real/align-official-decisions.md):
+Kept from the previous stack (official-equivalent or bench UX):
 
 - stale hold: a leader-stream gap freezes the arm at the last action (the
   official piper publisher drops >1 s stale messages);

@@ -1,6 +1,6 @@
 """Pika button edge bench -- HITL, records the REAL button's serial frames (#06).
 
-Protocol locked in .scratch/pika-sense-real/issues/06-real-clutch-button-edge.md:
+Protocol locked in issue #06:
 one recording window; the human presses 5 slow (~0.5-1 s hold, >=2 s apart),
 5 quick taps, 2 double-clicks (~300 ms pairs) and one 5 s hold.  The script
 logs EVERY serial frame's Command value with monotonic timestamps -- the
