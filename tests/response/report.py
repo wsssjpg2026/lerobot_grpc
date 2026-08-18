@@ -144,6 +144,7 @@ class ReportCollector:
                     "meta": run.sequence.meta,
                     "ref_offset_vs_law_mm": _num(run.metrics.get("ref_law_offset_mm")),
                     "metrics": _jsonify(run.metrics),
+                    "gate_events": _jsonify(run.gate_events),
                 }
                 for run in self.runs
             ],
@@ -245,6 +246,29 @@ class ReportCollector:
                 cells = [_fmt(run.metrics.get(flat)) for flat, _ in _TABLE_COLUMNS]
                 lines.append("| %s | %s |" % (run.sequence.name, " | ".join(cells)))
             lines.append("")
+
+        lines.append("## Gate events (server-log channel, Gap-2 tooling)")
+        lines.append("")
+        lines.append(
+            "In-process capture of the follower loggers during each run — the "
+            "throttled reject/jump/hold/relatch lines the safety stack emits "
+            "(the only server-side status channel besides in-process state)."
+        )
+        lines.append("")
+        lines.append("| sequence | reject | jump | hold | relatch |")
+        lines.append("|---|---|---|---|---|")
+        for run in self.runs:
+            g = run.gate_events
+            if not g:
+                continue
+            lines.append(
+                "| %s | %s | %s | %s | %s |" % (
+                    run.sequence.name,
+                    g.get("reject_count", 0), g.get("jump_count", 0),
+                    g.get("hold_count", 0), g.get("relatch_count", 0),
+                )
+            )
+        lines.append("")
 
         lines.append("## Handshake offset (test-side T_ref vs law T_arm_ref)")
         lines.append("")

@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .backends import FollowerBackend
+from .gate_events import GateLogCapture, summarize
 from .injectors import Sequence
 from .metrics import (
     ACTION_HZ,
@@ -63,13 +64,20 @@ class RunResult:
     solutions: list = field(default_factory=list)  # sim: JointSolution slice
     metrics: dict = field(default_factory=dict)
     events_fired: list = field(default_factory=list)
+    gate_events: dict = field(default_factory=dict)  # log-derived gate summary
 
 
 class Runner:
-    def __init__(self, backend: FollowerBackend, fk: TestFK, collector=None):
+    def __init__(self, backend: FollowerBackend, fk: TestFK, collector=None,
+                 gate_capture: GateLogCapture | None = None):
         self.backend = backend
         self.fk = fk
         self.collector = collector
+        # Server-log gate events (Gap-2 tooling): capture is live only while
+        # the follower loggers are in THIS process (sim backend); on real
+        # attach runs the report notes the offline tee'd-log merge instead.
+        self.gate_capture = gate_capture or GateLogCapture()
+        self.gate_capture.attach()
 
     # ------------------------------------------------------------------
     # Session plumbing
@@ -151,6 +159,7 @@ class Runner:
 
         stats_before = stats.snapshot() if stats is not None else {}
         sol_start = len(solutions_all) if solutions_all is not None else 0
+        gate_start_idx = len(self.gate_capture.events)
 
         result = RunResult(sequence=seq, ref=ref, law_ref=law_ref)
         samples: list[Sample] = result.samples
@@ -214,6 +223,10 @@ class Runner:
             window = {}
         if solutions_all is not None:
             result.solutions = [sol for _, sol in solutions_all[sol_start:]]
+
+        # Gate events recorded during this run (in-process capture; the
+        # tee'd-log CLI merge covers the real backend offline).
+        result.gate_events = summarize(self.gate_capture.events[gate_start_idx:])
 
         lead_s = float(seq.meta.get("lead_s", 0.3))
         m: dict = {"note": note} if note else {}
