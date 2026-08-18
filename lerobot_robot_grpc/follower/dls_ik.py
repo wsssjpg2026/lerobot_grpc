@@ -1,8 +1,8 @@
 """Damped Least Squares (DLS) inverse kinematics solver for MuJoCo models.
 
 A compact, self-contained IK solver that uses MuJoCo's native Jacobian
-(``mj_jacSite``) and a DLS update rule.  Inspired by the reference
-implementation in ``simulation/src/sim_teleop/ik/dls.py`` (Pika → JAKA teleop).
+(``mj_jacSite``) and a DLS update rule.  Inspired by a Pika → JAKA teleop
+reference implementation (imported in commit fff7254).
 
 The DLS formulation is numerically stable near kinematic singularities — the
 damping term (λ²I) prevents the pseudo-inverse from diverging when the

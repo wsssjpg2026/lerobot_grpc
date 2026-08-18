@@ -65,7 +65,11 @@ pip install -e ".[dev]"
 pytest tests/
 ```
 
-Current tests cover the leader server's bus-lock safety mechanism (`_acquire_bus` / `_release_bus` / `_bus_watchdog` / `_reset_bus_lock_state`).
+Current tests (11 files in `tests/`) cover the shared pose-delta law and feature
+schema (PikaAnyArm official alignment), the Pika Sense leader's delta computation,
+follower/leader bus-lock safety, MuJoCo DLS-IK recovery, sim and client-side clutch
+semantics, the auto-reference mode, the real SO-101 pose-delta servicer, and the sim
+end-to-end pose-delta pipeline.
 
 ## Video streaming (H.264)
 

@@ -432,8 +432,8 @@ class SO101FollowerServicer(FollowerServicer):
 
     def _encode_feature_info(self, feature_info: dict[str, Any]) -> dict[str, device_pb2.OneFeatureInfo]:
         # Returns a dict (not a generator): encode_feature/load_feature subscript it by key,
-        # so a generator would raise KeyError. The streaming Get*FeatureInfo methods wrap
-        # the result with iter(...values()) to turn it back into a gRPC response stream.
+        # so a generator would raise KeyError. GetInfo fills the GetInfoResponse feature
+        # fields from the result's ...values().
         result: dict[str, device_pb2.OneFeatureInfo] = {}
         for key, val in feature_info.items():
             if isinstance(val, tuple):

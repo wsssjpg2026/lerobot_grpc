@@ -29,7 +29,7 @@ mechanical:
 ```
 
 - **The client is generic.** `GRPCFollower` / `GRPCLeader` discover the remote
-  device's feature schema at runtime via the `Get*FeatureInfo` RPCs. They do **not**
+  device's feature schema at runtime via the `GetInfo` RPC. They do **not**
   know — or need to know — whether the other end is a SO-101, a Unitree G1, or a
   Meta Quest 3. You will **never** touch the client to support new hardware.
 - **Each piece of hardware gets exactly one server-side *servicer*** — a subclass of
@@ -96,14 +96,12 @@ class YourRobotFollowerServicer(FollowerServicer):
         self.robot = robot
 
     # --- feature introspection: tell the client what this device speaks --------
-    def GetObservationFeatureInfo(self, request, context):
-        return self._encode_feature_info(self.robot.observation_features)
-
-    def GetActionFeatureInfo(self, request, context):
-        return self._encode_feature_info(self.robot.action_features)
-
-    def GetFeedbackFeatureInfo(self, request, context):
-        return self._encode_feature_info(self.robot.action_features)  # or a distinct set
+    def GetInfo(self, request, context):
+        return device_pb2.GetInfoResponse(
+            observation_features=self._encode_feature_info(self.robot.observation_features).values(),
+            action_features=self._encode_feature_info(self.robot.action_features).values(),
+            feedback_features=self._encode_feature_info(self.robot.action_features).values(),  # or a distinct set
+        )
 
     # --- lifecycle -------------------------------------------------------------
     def Connect(self, request, context): ...
@@ -251,7 +249,7 @@ schema — that differs from `self.robot.action_features` (which is joint angles
 
 ```python
 class G1FollowerServicer(FollowerServicer):
-    def GetActionFeatureInfo(self, request, context):
+    def GetInfo(self, request, context):
         return build_hand_pose_feature_info()           # ← NOT self.robot.action_features
 
     def SendAction(self, request_iterator, context):

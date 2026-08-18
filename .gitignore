@@ -19,4 +19,3 @@ examples/so101_grpc_test_*/
 
 # Example/test runtime outputs (e.g. captured images from camera demos)
 outputs/
-.qwen/
