@@ -11,7 +11,7 @@ FK → IK → MuJoCo physics pipeline:
 
 Run with the env that has ``mujoco`` + ``lerobot[kinematics]`` installed::
 
-    python examples/test_mujoco_pose_delta.py
+    python tests/test_mujoco_pose_delta.py
 """
 
 from __future__ import annotations
