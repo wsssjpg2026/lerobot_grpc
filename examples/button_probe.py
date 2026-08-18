@@ -18,7 +18,7 @@ hold-length apart -> level semantics; <50 ms bursts -> bounce.
 !! Pika controller only (/dev/ttyUSB0).  The SO-101 arm is /dev/ttyACM0 --
 never open it here.
 
-Run (from lerobot_grpc/, env lrg):
+Run (from lerobot_grpc/, env lerobot-grpc-serve):
     python examples/button_probe.py --duration 90 --csv /tmp/button_probe_r1.csv
 """
 

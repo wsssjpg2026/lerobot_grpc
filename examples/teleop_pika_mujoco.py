@@ -35,13 +35,13 @@ Clutch edge sources (``--clutch-source``):
 Usage::
 
     # Terminal 1: MuJoCo follower
-    conda run -n lrg python examples/serve_mujoco_follower.py --action-mode pose_delta --render
+    conda run -n lerobot-grpc-serve python examples/serve_mujoco_follower.py --action-mode pose_delta --render
 
     # Terminal 2: Pika Sense leader
-    conda run -n lerobot-grpc-test python examples/serve_pika_sense_leader.py --port /dev/ttyUSB0
+    conda run -n lerobot-grpc-serve python examples/serve_pika_sense_leader.py --port /dev/ttyUSB0
 
     # Terminal 3: This script
-    conda run -n lrg python examples/teleop_pika_mujoco.py [--fps=30]
+    conda run -n collection-serve python examples/teleop_pika_mujoco.py [--fps=30]
 """
 
 import argparse
