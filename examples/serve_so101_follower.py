@@ -62,23 +62,16 @@ class ServeFollowerConfig:
     address: str = "0.0.0.0:5555"
     camera_encoding: str = "h264"  # "h264" (inter-frame) or "jpeg" (per-frame)
     # "joint" (default, A-class) or "pose_delta" (B-class: 8-feature EE pose
-    # deltas solved by the shared PoseDeltaLaw with the real-arm safety
-    # posture -- base safety sphere / residual-hold / stale-hold / ~5mm slew).
+    # deltas composed as T_target = T_arm_ref @ Δ and solved by the shared
+    # PoseDeltaLaw with the PikaAnyArm official safety stack -- IK hard
+    # limits, 30° jump warm-start reset, FK consistency 0.3 m, per-frame
+    # step cap, self-collision gate, stale-hold).
     action_mode: str = "joint"
     # Elbow over-fold hard wall (deg, positive = past the folded-rest
     # calibration zero): the physical arm binds at ~+3-4 deg on that side
     # (#05 bench); the IK elbow ceiling is cut to this value in pose_delta
     # mode so no solve commands the arm into the wall.  None disables.
     elbow_max_deg: float | None = 2.0
-    # Base safety sphere radius = ratio x max_reach (543mm): pose_delta
-    # intents are clamped into this ball around the base.  The 0.72 default
-    # (391mm) predates REAL_REST_POSTURE_DEG -- the law home's EE sits at
-    # 463mm, OUTSIDE the sphere, so intents near home were ray-clamped onto
-    # the surface and the arm could only close to |home| - radius = 72mm
-    # (#05 bench 2026-08-18: pre-pose stalled 62mm short pinned at the sphere
-    # edge; teleop from there held 541/1042 frames).  >= 0.86 contains the
-    # home; 0.88 (478mm) keeps ~6cm margin inside the 543mm max reach.
-    workspace_sphere_ratio: float = 0.72
 
 
 @parser.wrap()
@@ -91,7 +84,6 @@ def main(cfg: ServeFollowerConfig):
         camera_encoding=cfg.camera_encoding,
         action_mode=cfg.action_mode,
         elbow_max_deg=cfg.elbow_max_deg,
-        workspace_sphere_ratio=cfg.workspace_sphere_ratio,
     )
     server = FollowerServer(FollowerServerConfig(address=cfg.address), servicer)
     server.start()

@@ -3,7 +3,8 @@
 A standalone FollowerServicer (following MockFollowerServicer) that wraps a
 MuJoCo simulation of the SO-101 arm.  In pose_delta mode it receives
 end-effector pose deltas (8 FLOAT32 features from the shared pose_delta_schema)
-and delegates the full assign + DLS + workspace-safety + slew + hold pipeline to
+and delegates the compose + DLS + official-safety-check pipeline (PikaAnyArm
+alignment, see pose_delta_law.py) to
 the shared PoseDeltaLaw (the "one law" also driven by the real Feetech servicer),
 then writes the resulting joint targets into the MuJoCo physics engine.  In
 joint mode it accepts joint-space actions directly -- the same contract as the
@@ -27,7 +28,7 @@ import numpy as np
 from google.protobuf.empty_pb2 import Empty
 
 from .follower_server import FollowerServicer
-from .pose_delta_law import PoseDeltaLaw, workspace_policy_from_legacy
+from .pose_delta_law import PoseDeltaLaw
 from .utils import encode_feature, load_feature
 from lerobot_robot_grpc.pose_delta_schema import build_pose_delta_feature_info
 from lerobot_robot_grpc.protos import device_pb2
@@ -115,13 +116,9 @@ class MuJoCoSO101Servicer(FollowerServicer):
         "pose_delta" (default) or "joint".
     render
         If True, launch a passive MuJoCo viewer window.
-    workspace_bubble_m / workspace_bubble_ratio / workspace_escape
-        Legacy workspace-safety knobs, mapped to a WorkspacePolicy on the law
-        (see pose_delta_law.workspace_policy_from_legacy).  The real servicer
-        passes a BaseSafetySphere directly.
-    residual_hold_m
-        Forwarded to the law; None (default) keeps the sim's apply+overshoot
-        behaviour.  The real servicer sets 15-20 mm.
+    max_dq_deg / max_dq_frame_deg
+        DLS per-iteration clip and the official per-frame published-step cap
+        (forwarded to the law; identical defaults to the real servicer).
     """
 
     def __init__(
@@ -134,23 +131,8 @@ class MuJoCoSO101Servicer(FollowerServicer):
         gripper_max_distance_mm: float = DEFAULT_GRIPPER_MAX_DISTANCE_MM,
         home_joints_deg: tuple[float, ...] = HOME_JOINTS_DEG,
         ctrl_smoothing_alpha: float = 0.20,
-        position_deadband_m: float = 0.001,
-        rotation_deadband_rad: float = 0.005,
-        workspace_radius_m: float = 0.015,  # 15mm/step -- safety: prevents high-speed drift
-        translation_rot_weight: float = 0.0,
-        rotation_significant_rad: float = 0.009,
-        snap_pos_err_m: float = 0.008,
-        rest_gain: float = 0.08,
         max_dq_deg: float = 6.0,
-        elbow_floor_deg: float | None = None,
-        home_capture_m: float = 0.080,
-        home_rest_gain: float = 0.40,
-        home_seed_blend: float = 0.15,
-        workspace_bubble_m: float | None = None,
-        workspace_bubble_ratio: float = 0.60,
-        workspace_escape: bool = True,
-        residual_hold_m: float | None = None,
-        max_reach_override_m: float | None = None,
+        max_dq_frame_deg: float = 6.7,
     ):
         if action_mode not in ("joint", "pose_delta"):
             raise ValueError(
@@ -189,10 +171,10 @@ class MuJoCoSO101Servicer(FollowerServicer):
             }
 
         # --- Shared pose_delta law (the one law, sim + real) ----------------
-        # The law owns the latch state, DLS solver, workspace policy and holds.
-        # This servicer is only the MuJoCo backend: it feeds the law the current
-        # qpos and writes the solved joints back.  See pose_delta_law.py and
-        # research/09 section 7 ("same solver + same hold").
+        # The law runs the PikaAnyArm official safety stack (see
+        # pose_delta_law.py) — identical parameters to the real Feetech
+        # servicer.  This servicer is only the MuJoCo backend: it feeds the
+        # law the current qpos and writes the solved joints back.
         self._law: PoseDeltaLaw | None = None
         if action_mode == "pose_delta":
             self._law = PoseDeltaLaw(
@@ -201,26 +183,10 @@ class MuJoCoSO101Servicer(FollowerServicer):
                 body_dofs=list(range(len(BODY_JOINTS))),
                 body_joint_names=BODY_JOINTS,
                 home_joints_deg=home_joints_deg,
-                workspace_policy=workspace_policy_from_legacy(
-                    workspace_bubble_m, workspace_bubble_ratio
-                ),
                 rot_weight=rot_weight,
-                translation_rot_weight=translation_rot_weight,
-                rotation_significant_rad=rotation_significant_rad,
-                rest_gain=rest_gain,
-                home_capture_m=home_capture_m,
-                home_rest_gain=home_rest_gain,
-                home_seed_blend=home_seed_blend,
-                snap_pos_err_m=snap_pos_err_m,
-                position_deadband_m=position_deadband_m,
-                rotation_deadband_rad=rotation_deadband_rad,
-                workspace_radius_m=workspace_radius_m,
                 max_dq_deg=max_dq_deg,
-                elbow_floor_deg=elbow_floor_deg,
+                max_dq_frame_deg=max_dq_frame_deg,
                 gripper_max_distance_mm=gripper_max_distance_mm,
-                workspace_escape=workspace_escape,
-                residual_hold_m=residual_hold_m,
-                max_reach_override_m=max_reach_override_m,
             )
 
         # --- Optional viewer ------------------------------------------------
@@ -232,10 +198,10 @@ class MuJoCoSO101Servicer(FollowerServicer):
 
         logger.info(
             "MuJoCoSO101Servicer ready: action_mode=%s xml=%s render=%s law=%s "
-            "ctrl_smoothing_alpha=%s workspace_radius=%.0fmm",
+            "ctrl_smoothing_alpha=%s",
             action_mode, xml_path, render,
             "pose_delta" if self._law is not None else "none",
-            ctrl_smoothing_alpha, workspace_radius_m * 1000,
+            ctrl_smoothing_alpha,
         )
         if action_mode == "pose_delta":
             logger.warning(
@@ -267,7 +233,7 @@ class MuJoCoSO101Servicer(FollowerServicer):
     # ------------------------------------------------------------------
 
     def _lock_t_zero_from_fk(self) -> None:
-        """Re-latch the law reference (T_zero) at the current MuJoCo FK.
+        """Re-latch the law reference (T_arm_ref) at the current MuJoCo FK.
 
         Thin backend adapter: the law is pure in the qpos argument, so this
         servicer supplies its own data.qpos as the FK seed.  Pose_delta only --
@@ -334,7 +300,7 @@ class MuJoCoSO101Servicer(FollowerServicer):
         return device_pb2.DeviceInfo(status=device_pb2.DeviceStatus.COLLECTION)
 
     def SetReference(self, request, context):
-        """Re-lock T_zero (and intent/cmd) at the current gripperframe FK.
+        """Re-lock T_arm_ref at the current gripperframe FK.
 
         Clutch re-engage contract (wayfinder #10): the client calls this on the
         engage edge before the leader's SetReference, so the next dT=0 action
@@ -348,8 +314,8 @@ class MuJoCoSO101Servicer(FollowerServicer):
             if self._law is not None:
                 self._lock_t_zero_from_fk()
                 logger.info(
-                    "SetReference: T_zero re-locked at current FK pos=[%.4f %.4f %.4f]",
-                    *self._law.t_zero[:3, 3],
+                    "SetReference: T_arm_ref re-locked at current FK pos=[%.4f %.4f %.4f]",
+                    *self._law.arm_reference[:3, 3],
                 )
             else:
                 logger.info("SetReference: no-op (action_mode=%s)", self._action_mode)

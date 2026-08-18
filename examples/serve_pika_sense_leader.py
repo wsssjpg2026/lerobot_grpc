@@ -4,8 +4,11 @@ Connects to the Pika Sense hardware (Vive Tracker + gripper sensor), wraps it
 in a :class:`PikaSenseServicer`, and starts a gRPC ``LeaderServer`` that
 streams 8-FLOAT32 pose-delta actions.
 
-Calibration (lighthouse→base axis alignment) is done via the servicer's
+Calibration persists the gripper travel range (plus the legacy
+lighthouse→base rotation, unused by the teleop path) via the servicer's
 built-in 8-step StreamCalibration protocol — no ``--calibrate`` flag needed.
+Published deltas are raw 1:1 relative transforms (PikaAnyArm official
+semantics; follower-side safety stack handles the rest).
 
 Usage::
 
@@ -42,60 +45,6 @@ def main():
         help="gRPC bind address",
     )
     parser.add_argument(
-        "--dead-zone-mm",
-        type=float,
-        default=2.0,
-        help="Position dead-zone for published-offset updates when far from origin (default 2.0)",
-    )
-    parser.add_argument(
-        "--dead-zone-deg",
-        type=float,
-        default=0.5,
-        help="Rotation dead-zone for published-offset updates when far from origin (default 0.5)",
-    )
-    parser.add_argument(
-        "--pos-gain",
-        type=float,
-        default=0.45,
-        help="Hand-to-arm offset scale (default 0.45; 1.0 = 1:1)",
-    )
-    parser.add_argument(
-        "--ema-alpha",
-        type=float,
-        default=0.15,
-        help="Pose EMA alpha when the tracker is still (default 0.15; 1.0 = off)",
-    )
-    parser.add_argument(
-        "--ema-alpha-fast",
-        type=float,
-        default=0.70,
-        help="Pose EMA alpha when the tracker is moving quickly (default 0.70)",
-    )
-    parser.add_argument(
-        "--max-delta-mm",
-        type=float,
-        default=20.0,
-        help="Max change of the published offset per frame in mm (default 20)",
-    )
-    parser.add_argument(
-        "--home-capture-mm",
-        type=float,
-        default=40.0,
-        help="Inside this radius of T_begin the offset dead-zone is disabled (default 40)",
-    )
-    parser.add_argument(
-        "--jump-mm",
-        type=float,
-        default=50.0,
-        help="Ignore a tracker sample that jumps farther than this in one frame (default 50)",
-    )
-    parser.add_argument(
-        "--gripper-rate-mm-s",
-        type=float,
-        default=250.0,
-        help="Max gripper distance change in mm/s after EMA (default 250)",
-    )
-    parser.add_argument(
         "--device-id",
         default="pika_sense",
         help="Device ID for the calibration file name (default: pika_sense)",
@@ -124,15 +73,6 @@ def main():
     # --- Start server ---
     servicer = PikaSenseServicer(
         port=args.port,
-        dead_zone_mm=args.dead_zone_mm,
-        dead_zone_deg=args.dead_zone_deg,
-        pos_gain=args.pos_gain,
-        ema_alpha=args.ema_alpha,
-        ema_alpha_fast=args.ema_alpha_fast,
-        max_delta_mm=args.max_delta_mm,
-        home_capture_mm=args.home_capture_mm,
-        jump_mm=args.jump_mm,
-        gripper_rate_mm_s=args.gripper_rate_mm_s,
         calibration_dir=args.calibration_dir,
         device_id=args.device_id,
         auto_reference=args.auto_reference,

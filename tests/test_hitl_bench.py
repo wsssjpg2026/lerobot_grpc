@@ -3,7 +3,7 @@
 lerobot_robot_grpc.follower.hitl_bench is the offline judge over the CSV the
 thin driver (examples/teleop_hitl_bench.py) records: hold windows, freeze
 drift, re-lock first-frame jitter, stream gaps (stale hold), leader-down
-freeze, and the FK end-effector radius for the base-safety-sphere check.
+freeze, and the max per-frame joint step against the official per-frame cap.
 """
 
 from __future__ import annotations
@@ -237,24 +237,44 @@ class TestBuildReport:
         assert report.relocks[0].passed
         assert len(report.gaps) >= 1
         assert report.leader_downs == []       # leader_ok stayed 1 throughout
-        assert report.sphere is not None
-        assert report.sphere.max_radius_m > 0.0
+        assert report.step is not None
+        assert report.step.max_step_deg >= 0.0
         text = report.render()
-        assert "HOLD" in text and "RELOCK" in text and "SPHERE" in text
+        assert "HOLD" in text and "RELOCK" in text and "STEP" in text
         assert "STALE" in text
 
-    def test_sphere_violation_fails_the_report(self, tmp_path):
-        # A pose far outside the 391 mm sphere cannot come from FK of a sane
-        # joint set, so drive the radius check directly via a stub positions
-        # array through the report's sphere evaluation helper instead.
-        from lerobot_robot_grpc.follower.hitl_bench import evaluate_sphere
-        import numpy as np
-        pos = np.array([[0.0, 0.0, 0.30], [0.40, 0.0, 0.10]])
-        ok = evaluate_sphere(pos, radius_m=0.72 * 0.543)
-        assert not ok.passed
-        assert ok.max_radius_m == pytest.approx(math.hypot(0.40, 0.10))
-        inside = evaluate_sphere(np.array([[0.30, 0.0, 0.10]]), radius_m=0.72 * 0.543)
-        assert inside.passed
+
+class TestStepJudgement:
+    def test_step_passes_within_the_cap_band(self):
+        from lerobot_robot_grpc.follower.hitl_bench import evaluate_step
+        rows = [
+            _row(0.033 * i, obs={"obs_pan_deg": 2.0 * i}) for i in range(5)
+        ]
+        res = evaluate_step(rows)
+        assert res.passed
+        assert res.max_step_deg == pytest.approx(2.0)
+
+    def test_step_violation_fails(self):
+        from lerobot_robot_grpc.follower.hitl_bench import evaluate_step
+        rows = (
+            [_row(0.033 * i, obs={"obs_elbow_deg": 0.0}) for i in range(3)]
+            + [_row(0.1 + 0.033 * i, obs={"obs_elbow_deg": 20.0 * (i + 1)})
+               for i in range(3)]
+        )
+        res = evaluate_step(rows)
+        assert not res.passed
+        assert res.max_step_deg == pytest.approx(20.0)
+
+    def test_hold_rows_are_not_judged_as_steps(self):
+        """sent=0 rows (hold / leader-down) are excluded: a timestamp gap is
+        not a joint step."""
+        from lerobot_robot_grpc.follower.hitl_bench import evaluate_step
+        rows = [_row(0.033 * i) for i in range(3)]
+        rows.append(_row(5.0, sent=0, obs={"obs_pan_deg": 40.0}))  # gap + hold
+        rows.append(_row(5.033, obs={"obs_pan_deg": 0.0}))
+        res = evaluate_step(rows)
+        # The hold row's 40 deg pose never joins a sent-sent pair.
+        assert res.passed
 
 
 def test_body_joint_keys_match_the_model_order():

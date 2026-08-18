@@ -55,13 +55,6 @@ def _make_leader(tmp_path, auto_reference):
         R_lh2base=np.eye(3),
         calibration_dir=str(tmp_path),
         command_state_provider=lambda: 1,
-        ema_alpha=1.0,
-        ema_alpha_fast=1.0,
-        dead_zone_mm=0.0,
-        dead_zone_deg=0.0,
-        max_delta_mm=1000.0,
-        home_capture_mm=0.0,
-        jump_mm=10000.0,
         auto_reference=auto_reference,
     )
     servicer._device = _FakeSense()
@@ -91,7 +84,7 @@ class TestAutoReference:
 
         servicer._device.pose_position = np.array([0.6, 0.0, 0.0])
         action = servicer._compute_action()
-        assert _delta_pos(action)[0] == pytest.approx(0.6 * 0.45, abs=1e-6)
+        assert _delta_pos(action)[0] == pytest.approx(0.6, abs=1e-6)
 
     def test_latch_frame_publishes_zero(self, tmp_path):
         """The frame at the latch itself publishes ~zero: the Connect pose is
@@ -113,7 +106,7 @@ class TestAutoReference:
 
         servicer._device.pose_position = np.array([0.0, 0.6, 0.0])
         action = servicer._compute_action()
-        assert _delta_pos(action)[1] == pytest.approx(0.6 * 0.45, abs=1e-6)
+        assert _delta_pos(action)[1] == pytest.approx(0.6, abs=1e-6)
 
 
 class TestLateTrackerDiscovery:
@@ -139,7 +132,7 @@ class TestLateTrackerDiscovery:
 
         servicer._device.pose_position = np.array([0.0, 0.0, 0.6])
         action = servicer._compute_action()
-        assert _delta_pos(action)[2] == pytest.approx(0.6 * 0.45, abs=1e-6)
+        assert _delta_pos(action)[2] == pytest.approx(0.6, abs=1e-6)
 
 
 class TestDefaultContract:
@@ -160,4 +153,4 @@ class TestDefaultContract:
         servicer.SetReference(None, None)
         servicer._device.pose_position = np.array([0.6, 0.0, 0.0])
         action = servicer._compute_action()
-        assert _delta_pos(action)[0] == pytest.approx(0.6 * 0.45, abs=1e-6)
+        assert _delta_pos(action)[0] == pytest.approx(0.6, abs=1e-6)

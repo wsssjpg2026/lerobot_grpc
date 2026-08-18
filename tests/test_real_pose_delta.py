@@ -5,10 +5,10 @@ PoseDeltaLaw (the sim MuJoCoSO101Servicer was the first).  These tests
 drive its **public RPC surface** with a mock Feetech bus (no hardware, no gRPC
 socket): Connect / SendAction / SetReference / GetObservation / GetFeedback.
 
-Safety posture under test (map Notes, locked): base safety sphere at
-max_reach x ratio (URDF-nominal 543 mm), residual-hold 15-20 mm, slew ~5
-mm/frame, stale-hold > 1 s (real-only), IK limits from the measured
-calibration range.
+Safety stack under test (PikaAnyArm official alignment): IK hard limits
+(model + measured calibration range + elbow wall), 30° jump warm-start
+reset, FK consistency 0.3 m reject/hold, per-frame 6.7° step cap,
+self-collision gate (auto-bypassed on SO-101 meshes), stale-hold > 1 s.
 """
 
 from __future__ import annotations
@@ -29,7 +29,6 @@ from lerobot_robot_grpc.follower.mujoco_follower_server import (  # noqa: E402
     JOINTS,
     MuJoCoSO101Servicer,
 )
-from lerobot_robot_grpc.follower.pose_delta_law import BaseSafetySphere  # noqa: E402
 from lerobot_robot_grpc.follower.so101_follower_server import (  # noqa: E402
     REAL_REST_POSTURE_DEG,
     SO101FollowerServicer,
@@ -145,15 +144,17 @@ class TestActionModeConstruction:
         with pytest.raises(ValueError, match="action_mode"):
             _make_servicer(action_mode="cartesian_teleport")
 
-    def test_pose_delta_builds_law_with_real_safety_posture(self):
+    def test_pose_delta_builds_law_with_official_safety_stack(self):
         servicer = _make_servicer(action_mode="pose_delta")
         law = _law_of(servicer)
-        assert isinstance(law._workspace_policy, BaseSafetySphere)
-        # URDF-nominal max reach (#02) until #05/#07 calibration says otherwise.
-        assert law.max_reach_m == pytest.approx(0.543)
-        assert law._residual_hold_m == pytest.approx(0.018)
-        # Real-arm slew: ~5 mm/frame, not the sim 15 mm debug speed.
-        assert law._workspace_radius_m == pytest.approx(0.005)
+        # Official stack constants: 30 deg jump reset, 0.3 m FK consistency,
+        # 6.7 deg/frame published-step cap (200 deg/s at 30 Hz).
+        assert law._jump_reset_rad == pytest.approx(math.radians(30.0))
+        assert law._fk_consistency_m == pytest.approx(0.3)
+        assert math.degrees(law._max_dq_frame_rad) == pytest.approx(6.7)
+        # SO-101 scene has a collision-geom group: the self-collision gate
+        # is auto-enabled (verified: no false positives across the workspace).
+        assert law.collision_enabled
 
     def test_pose_delta_action_schema_is_the_shared_pose_delta_keys(self):
         servicer = _make_servicer(action_mode="pose_delta")
@@ -171,9 +172,10 @@ class TestActionModeConstruction:
 # ---------------------------------------------------------------------------
 
 
-def _independent_fk_pos(positions) -> np.ndarray:
-    """FK of the gripperframe site computed on a SEPARATE MuJoCo model -- the
-    independent source of truth for what the law should have latched."""
+def _independent_fk_pose(positions) -> tuple[np.ndarray, np.ndarray]:
+    """FK (pos, rot) of the gripperframe site computed on a SEPARATE MuJoCo
+    model -- the independent source of truth for what the law should have
+    latched and how it should rotate a body-frame delta into the base frame."""
     model = mujoco.MjModel.from_xml_path(str(XML_PATH))
     data = mujoco.MjData(model)
     qpos = [math.radians(positions[j]) for j in BODY_JOINTS]
@@ -182,16 +184,20 @@ def _independent_fk_pos(positions) -> np.ndarray:
     data.qpos[:] = qpos
     mujoco.mj_forward(model, data)
     sid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "gripperframe")
-    return data.site_xpos[sid].copy()
+    return data.site_xpos[sid].copy(), data.site_xmat[sid].reshape(3, 3).copy()
+
+
+def _independent_fk_pos(positions) -> np.ndarray:
+    return _independent_fk_pose(positions)[0]
 
 
 class TestConnectLocksReference:
-    def test_connect_locks_t_zero_at_fk_of_present_position(self):
+    def test_connect_locks_arm_ref_at_fk_of_present_position(self):
         robot = _FakeRobot()
         servicer = _make_servicer(robot, action_mode="pose_delta")
         _connect(servicer)
         np.testing.assert_allclose(
-            _law_of(servicer).t_zero[:3, 3], _independent_fk_pos(HOME_POS), atol=1e-6
+            _law_of(servicer).arm_reference[:3, 3], _independent_fk_pos(HOME_POS), atol=1e-6
         )
 
     def test_connect_reads_the_bus_under_the_lock(self):
@@ -208,7 +214,7 @@ class TestConnectLocksReference:
         resp = servicer.Connect(None, None)
         assert resp.status == device_pb2.CalibrationStatus.NEED_TO_CALIBRATE
         with pytest.raises(AssertionError, match="lock_reference"):
-            _ = _law_of(servicer).t_zero
+            _ = _law_of(servicer).arm_reference
 
     def test_joint_mode_connect_never_touches_the_law(self):
         robot = _FakeRobot()
@@ -281,41 +287,30 @@ class TestSendActionPoseDelta:
         assert 0.0 <= sent["gripper.pos"] <= 100.0
 
     def test_commanded_joints_reach_the_intent(self):
-        """A +10 mm x intent (unlimited slew) lands the commanded FK ~10 mm
-        ahead of the latched home pose -- checked on an independent model."""
-        robot = _FakeRobot()
-        servicer = _make_servicer(
-            robot, action_mode="pose_delta", workspace_radius_m=0.0
-        )
-        _connect(servicer)
-        servicer.SendAction(_action_request(servicer, _delta(dx=0.010)), None)
-        moved = _fk_of_commanded(robot.sent_actions[0]) - _independent_fk_pos(HOME_POS)
-        np.testing.assert_allclose(moved, [0.010, 0.0, 0.0], atol=2e-3)
-
-    def test_slew_limits_one_frame_to_five_mm(self):
-        """Real-arm slew: a 30 mm intent moves the first command only ~5 mm."""
+        """A +10 mm body-x intent lands the commanded FK ~10 mm ahead of the
+        latched home pose ALONG THE REFERENCE X AXIS (official composition:
+        the follower rotates the body-frame delta through R_arm_ref) --
+        checked on an independent model."""
         robot = _FakeRobot()
         servicer = _make_servicer(robot, action_mode="pose_delta")
         _connect(servicer)
-        servicer.SendAction(_action_request(servicer, _delta(dx=0.030)), None)
-        dist = float(
-            np.linalg.norm(
-                _fk_of_commanded(robot.sent_actions[0]) - _independent_fk_pos(HOME_POS)
-            )
-        )
-        assert dist == pytest.approx(0.005, abs=2e-3)
+        servicer.SendAction(_action_request(servicer, _delta(dx=0.010)), None)
+        ref_pos, ref_rot = _independent_fk_pose(HOME_POS)
+        expected_dir = ref_rot @ np.array([0.010, 0.0, 0.0])
+        moved = _fk_of_commanded(robot.sent_actions[0]) - ref_pos
+        np.testing.assert_allclose(moved, expected_dir, atol=2e-3)
 
-    def test_base_safety_sphere_clamps_beyond_reach_intent(self):
-        """The base sphere caps the absolute intent at ratio x max_reach even
-        when the leader asks for 2 m away."""
+    def test_far_unreachable_intent_rejected_and_held(self):
+        """Official FK consistency wiring: a 2 m intent is unreachable, the
+        solve is rejected and the bus keeps receiving the previous action."""
         robot = _FakeRobot()
-        servicer = _make_servicer(
-            robot, action_mode="pose_delta", workspace_radius_m=0.0
-        )
+        servicer = _make_servicer(robot, action_mode="pose_delta")
         _connect(servicer)
+        servicer.SendAction(_action_request(servicer, _delta(dx=0.010)), None)
+        held = robot.sent_actions[-1]
         servicer.SendAction(_action_request(servicer, _delta(dx=2.0)), None)
-        radius = float(np.linalg.norm(_fk_of_commanded(robot.sent_actions[0])))
-        assert radius <= 0.72 * 0.543 + 0.02  # sphere + IK residual slack
+        for j in BODY_JOINTS:
+            assert robot.sent_actions[-1][f"{j}.pos"] == held[f"{j}.pos"]
 
     def test_response_echoes_the_wire_action(self):
         robot = _FakeRobot()
@@ -372,7 +367,7 @@ class TestStaleHold:
         only the gripper follows."""
         robot = _FakeRobot()
         servicer = _make_servicer(
-            robot, action_mode="pose_delta", workspace_radius_m=0.0
+            robot, action_mode="pose_delta"
         )
         _connect(servicer)
         servicer.SendAction(_action_request(servicer, _delta(dx=0.010)), None)
@@ -392,7 +387,7 @@ class TestStaleHold:
     def test_actions_within_timeout_are_not_stale(self):
         robot = _FakeRobot()
         servicer = _make_servicer(
-            robot, action_mode="pose_delta", workspace_radius_m=0.0
+            robot, action_mode="pose_delta"
         )
         _connect(servicer)
         servicer.SendAction(_action_request(servicer, _delta(dx=0.010)), None)
@@ -404,7 +399,7 @@ class TestStaleHold:
     def test_first_action_after_connect_is_never_stale(self):
         robot = _FakeRobot()
         servicer = _make_servicer(
-            robot, action_mode="pose_delta", workspace_radius_m=0.0
+            robot, action_mode="pose_delta"
         )
         _connect(servicer)
         servicer.SendAction(_action_request(servicer, _delta(dx=0.010)), None)
@@ -414,18 +409,18 @@ class TestStaleHold:
 
 
 # ---------------------------------------------------------------------------
-# Slice 5 -- SetReference: re-lock T_zero at the current pose, no motion
+# Slice 5 -- SetReference: re-lock T_arm_ref at the current pose, no motion
 # ---------------------------------------------------------------------------
 
 
 class TestSetReference:
     def test_set_reference_relocks_at_current_pose_without_moving(self):
-        """Clutch re-engage contract on the real adapter: T_zero re-latches at
-        the measured arm pose (not the Connect home), and the re-latch itself
-        writes nothing to the bus."""
+        """Clutch re-engage contract on the real adapter: T_arm_ref re-latches
+        at the measured arm pose (not the Connect home), and the re-latch
+        itself writes nothing to the bus."""
         robot = _FakeRobot()
         servicer = _make_servicer(
-            robot, action_mode="pose_delta", workspace_radius_m=0.0
+            robot, action_mode="pose_delta"
         )
         _connect(servicer)
         # Teleop: follow +10 mm; the mock arm teleports to the commanded pose.
@@ -439,14 +434,17 @@ class TestSetReference:
         servicer.SetReference(None, None)
         assert len(robot.sent_actions) == actions_before  # re-latch moves nothing
         np.testing.assert_allclose(
-            _law_of(servicer).t_zero[:3, 3], stop_fk, atol=1e-6
+            _law_of(servicer).arm_reference[:3, 3], stop_fk, atol=1e-6
         )
 
-        # A zero delta after re-engage targets the stop pose, not Connect home.
+        # A zero delta after re-engage solves onto the stop pose, not Connect
+        # home: the commanded joints stay at the measured stop-pose joints.
         servicer.SendAction(_action_request(servicer, _delta(dx=0.0)), None)
-        np.testing.assert_allclose(
-            _law_of(servicer).target_pose[:3, 3], stop_fk, atol=1e-6
-        )
+        sent = robot.sent_actions[-1]
+        for j in BODY_JOINTS:
+            assert abs(sent[f"{j}.pos"] - robot.bus._positions[j]) < 1.5, (
+                f"{j} solved {sent[f'{j}.pos']:.1f}° off the stop pose"
+            )
 
     def test_set_reference_joint_mode_is_a_noop(self):
         servicer = _make_servicer()
@@ -516,7 +514,7 @@ class TestCalibrationQposLimits:
         robot = _FakeRobot()
         robot.calibration = _calibration()
         servicer = _make_servicer(
-            robot, action_mode="pose_delta", workspace_radius_m=0.0
+            robot, action_mode="pose_delta"
         )
         _connect(servicer)
         servicer.SendAction(_action_request(servicer, _delta(dz=-0.20)), None)
@@ -575,31 +573,31 @@ class TestCharacterizationRealServicer:
         adapter's default rest posture biases solves away from it)."""
         robot = _FakeRobot(DROOP_POS)
         servicer = _make_servicer(
-            robot, action_mode="pose_delta", workspace_radius_m=0.0
+            robot, action_mode="pose_delta"
         )
         _connect(servicer)
         servicer.SendAction(_action_request(servicer, _delta(dx=0.010)), None)
         obs = _drain_observation(servicer, max_ticks=2)
-        # The mock arm teleported to the command; the stream must report it.
+        # The mock arm teleported to the command; the stream must report it
+        # (FLOAT32 wire round-trip: ~1e-6 relative on ~1e1-magnitude joints).
         for j in JOINTS:
             assert obs[f"{j}.pos"] == pytest.approx(
-                robot.sent_actions[0][f"{j}.pos"], abs=1e-6
+                robot.sent_actions[0][f"{j}.pos"], abs=1e-4
             )
-        moved = _fk_of_commanded(obs) - _independent_fk_pos(DROOP_POS)
-        np.testing.assert_allclose(moved, [0.010, 0.0, 0.0], atol=2e-3)
+        ref_pos, ref_rot = _independent_fk_pose(DROOP_POS)
+        moved = _fk_of_commanded(obs) - ref_pos
+        np.testing.assert_allclose(moved, ref_rot @ np.array([0.010, 0.0, 0.0]), atol=2e-3)
 
 
 class TestCharacterizationSimServicer:
     def test_protobuf_send_action_then_observation_reads_back(self):
         """Same contract on the sim adapter: wire action in, joints out of the
-        observation stream, converging to the +10 mm intent."""
+        observation stream, converging to the +10 mm intent (body-frame x
+        rotated through the reference orientation)."""
         servicer = MuJoCoSO101Servicer(
             xml_path=str(XML_PATH),
             action_mode="pose_delta",
             render=False,
-            position_deadband_m=0.0,
-            rotation_deadband_rad=0.0,
-            workspace_radius_m=0.0,
         )
         servicer.Connect(None, None)
         # Draining the sim stream IS settling: physics only advances while the
@@ -609,8 +607,9 @@ class TestCharacterizationSimServicer:
         obs = _drain_observation(servicer, max_ticks=120)
         assert obs["elbow_flex.pos"] != pytest.approx(before["elbow_flex.pos"], abs=0.5) or \
             obs["shoulder_lift.pos"] != pytest.approx(before["shoulder_lift.pos"], abs=0.5)
-        moved = _fk_of_commanded(obs) - _independent_fk_pos(HOME_POS)
-        np.testing.assert_allclose(moved, [0.010, 0.0, 0.0], atol=4e-3)
+        ref_pos, ref_rot = _independent_fk_pose(HOME_POS)
+        moved = _fk_of_commanded(obs) - ref_pos
+        np.testing.assert_allclose(moved, ref_rot @ np.array([0.010, 0.0, 0.0]), atol=4e-3)
 
 
 
@@ -619,11 +618,10 @@ class TestCharacterizationSimServicer:
 # ---------------------------------------------------------------------------
 
 
-class TestRealArmSlewBand:
-    def test_joint_slew_stays_in_the_real_arm_band(self):
-        """Spec: real-arm joint slew is 3-6 deg/tick (with the ~5 mm/frame
-        Cartesian slew).  A 30 mm intent must move no joint past the band top
-        in one action."""
+class TestRealFrameCapBand:
+    def test_joint_step_stays_under_the_official_cap(self):
+        """Official per-frame cap: a 30 mm intent must move no joint past
+        6.7 deg in one action (the >30 deg 200 Hz interpolation equivalent)."""
         robot = _FakeRobot()
         servicer = _make_servicer(robot, action_mode="pose_delta")
         _connect(servicer)
@@ -631,25 +629,20 @@ class TestRealArmSlewBand:
         sent = robot.sent_actions[-1]
         for j in BODY_JOINTS:
             delta_deg = abs(sent[f"{j}.pos"] - HOME_POS[j])
-            assert delta_deg <= 6.0, f"{j} moved {delta_deg:.2f} deg in one tick"
+            assert delta_deg <= 6.7 + 1e-6, f"{j} moved {delta_deg:.2f} deg in one tick"
 
 
-class TestResidualHoldWiring:
-    def test_residual_hold_reaches_the_law_on_the_real_adapter(self):
-        """The 15-20 mm residual-hold is law-side and tested there; this locks
-        the WIRING: with an absurdly tight threshold (0.0 -> any nonzero IK
-        residual holds), a second distinct intent returns the held joints."""
+class TestFkConsistencyWiring:
+    def test_fk_consistency_hold_reaches_the_bus_on_the_real_adapter(self):
+        """The official 0.3 m FK-consistency reject/hold is law-side and tested
+        there; this locks the WIRING: after a good action, an absurd intent
+        keeps the bus receiving the held joints."""
         robot = _FakeRobot()
-        servicer = _make_servicer(
-            robot,
-            action_mode="pose_delta",
-            workspace_radius_m=0.0,
-            residual_hold_m=0.0,  # any nonzero residual holds (never exactly 0)
-        )
+        servicer = _make_servicer(robot, action_mode="pose_delta")
         _connect(servicer)
         servicer.SendAction(_action_request(servicer, _delta(dx=0.010)), None)
-        held = robot.sent_actions[-1]  # first solve: no previous action, no hold
-        servicer.SendAction(_action_request(servicer, _delta(dx=0.020)), None)
+        held = robot.sent_actions[-1]
+        servicer.SendAction(_action_request(servicer, _delta(dx=2.0)), None)
         for j in BODY_JOINTS:
             assert robot.sent_actions[-1][f"{j}.pos"] == held[f"{j}.pos"]
 
@@ -731,15 +724,21 @@ class TestElbowHardWall:
         assert hi[elbow] == pytest.approx(math.radians(2.0), abs=1e-6)
 
     def test_ik_never_commands_the_elbow_past_the_wall(self):
-        """Behavioural: with a full-turn recording the solver may want elbow
-        past +2 deg, but the commanded joint action stays under the wall."""
-        robot = _FakeRobot()
+        """Behavioural: parked at the REAL rest posture (a wall-legal elbow),
+        with a full-turn recording the solver may want elbow past +2 deg, but
+        the commanded joint action stays under the wall."""
+        rest_pos = {
+            name: REAL_REST_POSTURE_DEG[i] for i, name in enumerate(BODY_JOINTS)
+        }
+        rest_pos["gripper"] = 10.0
+        robot = _FakeRobot(rest_pos)
         robot.calibration = _calibration(elbow_range=(0, 4095))
         servicer = _make_servicer(
-            robot, action_mode="pose_delta", workspace_radius_m=0.0
+            robot, action_mode="pose_delta"
         )
         _connect(servicer)
-        servicer.SendAction(_action_request(servicer, _delta(dz=-0.20)), None)
+        for _ in range(4):
+            servicer.SendAction(_action_request(servicer, _delta(dz=-0.20)), None)
         sent = robot.sent_actions[-1]
         assert sent["elbow_flex.pos"] <= 2.0 + 0.5
 
@@ -895,7 +894,9 @@ class TestRealRestPosture:
     def test_real_default_rest_is_reachable_not_sim_home(self):
         servicer = _make_servicer(action_mode="pose_delta")
         law = _law_of(servicer)
-        assert law._home_joints_deg == REAL_REST_POSTURE_DEG
+        np.testing.assert_allclose(
+            law._ik_solver._rest_qpos, np.radians(np.asarray(REAL_REST_POSTURE_DEG))
+        )
         assert REAL_REST_POSTURE_DEG != HOME_JOINTS_DEG
 
     def test_sim_adapter_keeps_the_sim_home(self):
@@ -903,7 +904,10 @@ class TestRealRestPosture:
             xml_path=str(XML_PATH), action_mode="pose_delta", render=False
         )
         assert servicer._law is not None
-        assert servicer._law._home_joints_deg == HOME_JOINTS_DEG
+        np.testing.assert_allclose(
+            servicer._law._ik_solver._rest_qpos,
+            np.radians(np.asarray(HOME_JOINTS_DEG)),
+        )
 
     def test_rest_lies_within_wall_tightened_limits(self):
         """The rest posture must be INSIDE the effective limits the real arm
@@ -921,29 +925,28 @@ class TestRealRestPosture:
 
     def test_droop_seed_tracks_the_intent(self):
         """Behavioural regression of the R1 freeze: arm parked at the measured
-        droop pose, full-turn calibration + default wall, a 15 mm x intent --
-        the commanded FK must land ON the intent.  With the old sim-home rest
-        the solve pinned ~27 mm off the intent and froze there (body frozen,
-        gripper following)."""
+        droop pose, full-turn calibration + default wall, a 15 mm body-x
+        intent -- the commanded FK must land ON the intent (p_ref + R_ref @
+        Δ).  With the old sim-home rest the solve pinned ~27 mm off the
+        intent and froze there (body frozen, gripper following)."""
         robot = _FakeRobot(DROOP_POS)
         robot.calibration = _calibration(elbow_range=(0, 4095))
         servicer = _make_servicer(
-            robot, action_mode="pose_delta", workspace_radius_m=0.0
+            robot, action_mode="pose_delta"
         )
         _connect(servicer)
         for _ in range(6):
             servicer.SendAction(_action_request(servicer, _delta(dx=0.015)), None)
-        target = _independent_fk_pos(DROOP_POS) + np.array([0.015, 0.0, 0.0])
+        ref_pos, ref_rot = _independent_fk_pose(DROOP_POS)
+        target = ref_pos + ref_rot @ np.array([0.015, 0.0, 0.0])
         cmd_fk = _fk_of_commanded(robot.sent_actions[-1])
         assert float(np.linalg.norm(cmd_fk - target)) < 0.005
 
-    def test_real_adapter_wires_solver_bias_params(self):
-        """No reachable home to snap back to: the near-reference rest gain
-        matches the far gain (the sim's 0.40 snap would crawl a real arm),
-        and the elbow-flip escape threshold is re-based -- the sim's -15 deg
-        (sign vs the +60 sim home) sits inside the real arm's all-negative
-        working range and would fire every frame."""
+    def test_real_adapter_wires_reach_rest_posture(self):
+        """The DLS null-space rest task points at the REAL rest posture
+        (reachable, under the over-fold wall), not the sim home."""
         servicer = _make_servicer(action_mode="pose_delta")
         law = _law_of(servicer)
-        assert law._home_rest_gain == pytest.approx(0.08)
-        assert law._escape_flipped_deg == pytest.approx(math.radians(-60.0))
+        np.testing.assert_allclose(
+            law._ik_solver._rest_qpos, np.radians(np.asarray(REAL_REST_POSTURE_DEG))
+        )

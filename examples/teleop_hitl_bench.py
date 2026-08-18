@@ -24,8 +24,8 @@ Driver-only tolerances (the bench needs the loop to survive them):
   stale-hold on the first post-gap action is judged offline.
 
 Report mode: ``--report <csv>`` prints every machine-checked judgement
-(hold freeze, relock jitter, stale gaps, leader-down, sphere, desktop
-evidence) via lerobot_robot_grpc.follower.hitl_bench.
+(hold freeze, relock jitter, stale gaps, leader-down, per-frame joint step,
+desktop evidence) via lerobot_robot_grpc.follower.hitl_bench.
 
 Usage::
 
@@ -118,14 +118,15 @@ _REST_POSTURE_DEG = (0.0, 30.0, -20.0, 0.0, 0.0)
 def pre_pose(robot: GRPCFollower, args) -> None:
     """Slowly walk the arm to the law's rest posture before the Enter gate.
 
-    The law drives intents as T_zero + delta, so: re-lock T_zero at the
-    current pose, read the joints and FK them (same oracle as the offline
-    report), then ramp the delta toward FK(rest posture) in ``--pre-pose-step-mm``
-    bites at 30 Hz.  The first action engages the servos, so a torque-free
-    arm that sagged after calibration carries itself along the ramp.  Stall
-    detection backs out of unreachable approaches; either way T_zero is
-    re-locked at the pose actually reached, so the human alignment at Enter
-    starts with ~zero offset from a manipulable configuration.
+    The law composes T_target = T_arm_ref @ Δ (Δ in the reference's body
+    frame), so: re-lock T_arm_ref at the current pose, read the joints and
+    FK them (same oracle as the offline report), then ramp the body-frame
+    delta toward FK(rest posture) in ``--pre-pose-step-mm`` bites at 30 Hz.
+    The first action engages the servos, so a torque-free arm that sagged
+    after calibration carries itself along the ramp.  Stall detection backs
+    out of unreachable approaches; either way T_arm_ref is re-locked at the
+    pose actually reached, so the human alignment at Enter starts with
+    ~zero offset from a manipulable configuration.
     """
     import mujoco
     import numpy as np
@@ -172,8 +173,12 @@ def pre_pose(robot: GRPCFollower, args) -> None:
     print("=" * 55)
     input()
 
-    # T_zero := current pose, so the ramp below is relative to here.
+    # T_arm_ref := current pose, so the ramp below is relative to here.  The
+    # law composes T_target = T_arm_ref @ Δ with Δ in the reference's body
+    # frame, so the base-frame displacement need rotates through R_ref^T
+    # (R_ref stays fixed for the whole ramp — latch-once).
     robot.stub.SetReference(Empty(), timeout=robot.data_timeout_s)
+    need_body = t0_rot.T @ need
     need_rotvec = Rot.from_matrix(t0_rot.T @ tgt_rot).as_rotvec()
 
     print("\n🤖 预摆位进行中（可随时 Ctrl+C 急停）...")
@@ -189,7 +194,7 @@ def pre_pose(robot: GRPCFollower, args) -> None:
         else:
             sent_mm += args.pre_pose_step_mm
             frac = sent_mm / dist0_mm
-        delta = need * frac
+        delta = need_body * frac
         quat = Rot.from_rotvec(need_rotvec * frac).as_quat()  # [x, y, z, w]
         robot.send_action({
             "hand.delta_pos.x": float(delta[0]),
@@ -364,11 +369,7 @@ def run_bench(args) -> None:
 
 def report_bench(args) -> None:
     rows = load_rows(args.report)
-    report = build_report(
-        rows,
-        xml_path=str(_XML),
-        sphere_radius_m=args.sphere_mm / 1000.0,
-    )
+    report = build_report(rows, xml_path=str(_XML))
     print(report.render())
 
 
@@ -393,8 +394,6 @@ def main():
                         help="pre-pose success distance from the rest posture (default 10mm)")
     parser.add_argument("--pre-pose-stall-s", type=float, default=2.5,
                         help="pre-pose stall: no progress for this long -> stop ramp (default 2.5s)")
-    parser.add_argument("--sphere-mm", type=float, default=0.72 * 543,
-                        help="base safety sphere radius for the report (default 391)")
     args = parser.parse_args()
 
     init_logging()

@@ -8,9 +8,9 @@ Two halves of the gate, tested without gRPC or real hardware:
    frozen until ``SetReference`` lands, after which ΔT ≈ 0.
 
 2. **Follower** (`MuJoCoSO101Servicer` + MuJoCo): ``SetReference`` re-locks
-   ``T_zero`` at the current FK — after re-engage the intent is the stop
-   pose, *not* the Connect home; nothing moves at the re-latch itself, and
-   a disengaged arm holds its joints when no action arrives.
+   ``T_arm_ref`` at the current FK — after re-engage the solve maps onto the
+   stop pose, *not* the Connect home; nothing moves at the re-latch itself,
+   and a disengaged arm holds its joints when no action arrives.
 """
 
 from __future__ import annotations
@@ -68,13 +68,6 @@ def _make_leader(tmp_path, command_provider):
         R_lh2base=np.eye(3),
         calibration_dir=str(tmp_path),
         command_state_provider=command_provider,
-        ema_alpha=1.0,
-        ema_alpha_fast=1.0,
-        dead_zone_mm=0.0,
-        dead_zone_deg=0.0,
-        max_delta_mm=1000.0,
-        home_capture_mm=0.0,
-        jump_mm=10000.0,  # clutch tests: disable the separate jump-rebase gate
     )
     servicer._device = _FakeSense()
     servicer._tracker_device = "FAKE"
@@ -139,7 +132,7 @@ class TestLeaderClutch:
         servicer._device.pose_position = np.array([0.6, 0.0, 0.0])  # +100 mm
         action = servicer._compute_action()
         np.testing.assert_allclose(
-            _delta_pos(action), [0.45 * 0.1, 0.0, 0.0], atol=1e-9
+            _delta_pos(action), [0.1, 0.0, 0.0], atol=1e-9
         )
 
     def test_disengage_edge_freezes_publish_across_tracker_jump(self, tmp_path):
@@ -192,7 +185,7 @@ class TestLeaderClutch:
         servicer._device.pose_position = np.array([0.65, 0.0, 0.0])  # +50 mm
         action = servicer._compute_action()
         np.testing.assert_allclose(
-            _delta_pos(action), [0.45 * 0.05, 0.0, 0.0], atol=1e-9
+            _delta_pos(action), [0.05, 0.0, 0.0], atol=1e-9
         )
 
 
@@ -206,9 +199,6 @@ def _make_follower() -> MuJoCoSO101Servicer:
         xml_path=str(XML_PATH),
         action_mode="pose_delta",
         render=False,
-        position_deadband_m=0.0,
-        rotation_deadband_rad=0.0,
-        workspace_radius_m=0.0,  # unlimited slew — tests talk in offsets
     )
     servicer.Connect(None, None)
     return servicer
@@ -233,6 +223,14 @@ def _send_delta(servicer: MuJoCoSO101Servicer, dx: float = 0.0) -> None:
     servicer._target_ctrl = servicer._joint_action_to_ctrl(joint_action)
 
 
+def _walk_delta(servicer: MuJoCoSO101Servicer, dx: float, frames: int = 30) -> None:
+    """Send the same delta repeatedly so the per-frame step cap can walk the
+    commanded joints all the way to the target (single-frame large offsets
+    are capped at 6.7 deg by design — the official interpolation role)."""
+    for _ in range(frames):
+        _send_delta(servicer, dx)
+
+
 def _settle_physics(servicer: MuJoCoSO101Servicer, steps: int = 600) -> None:
     """Drive the PD toward ``_target_ctrl`` like GetObservation's EMA ramp."""
     servicer._data.ctrl[:] = servicer._target_ctrl
@@ -248,14 +246,15 @@ def _fk_pos(servicer: MuJoCoSO101Servicer) -> np.ndarray:
 
 
 class TestFollowerRelatch:
-    def test_set_reference_relocks_t_zero_at_stop_pose(self):
-        """Clutch pass criterion: re-engage must map ΔT=0 onto the *current*
-        pose — the intent never crawls back toward the Connect home."""
+    def test_set_reference_relocks_arm_ref_at_stop_pose(self):
+        """Clutch pass criterion: re-engage must map Δ=0 onto the *current*
+        pose — the solve never crawls back toward the Connect home."""
         servicer = _make_follower()
         home_fk = _fk_pos(servicer)
 
-        # Teleop: follow +50 mm, let physics settle at the stop pose.
-        _send_delta(servicer, 0.050)
+        # Teleop: follow +50 mm (walked — the per-frame cap limits each
+        # step), let physics settle at the stop pose.
+        _walk_delta(servicer, 0.050)
         _settle_physics(servicer)
         stop_fk = _fk_pos(servicer)
         assert np.linalg.norm(stop_fk - home_fk) > 0.03, "arm did not move"
@@ -265,23 +264,21 @@ class TestFollowerRelatch:
         # Re-latch must not move anything by itself.
         np.testing.assert_allclose(servicer._data.qpos, qpos_before, atol=1e-12)
         np.testing.assert_allclose(
-            servicer._law.t_zero[:3, 3], stop_fk, atol=1e-6
+            servicer._law.arm_reference[:3, 3], stop_fk, atol=1e-6
         )
 
-        # ΔT=0 after re-engage → intent = stop pose, not Connect home.
-        _send_delta(servicer, 0.0)
-        np.testing.assert_allclose(
-            servicer._law.target_pose[:3, 3], stop_fk, atol=1e-6
-        )
-        home_dist = float(np.linalg.norm(servicer._law.target_pose[:3, 3] - home_fk))
-        assert home_dist > 0.03, (
-            f"re-engage pulled intent {home_dist * 1000:.1f} mm back toward home"
-        )
+        # Δ=0 after re-engage → the solve holds the stop pose (commanded
+        # joints ≈ settled joints), not the Connect home.
+        joint_action = servicer._pose_delta_to_joint_action(_delta(0.0))
+        commanded = np.array([joint_action[f"{j}.pos"] for j in BODY_JOINTS])
+        settled_deg = np.degrees(servicer._data.qpos[: len(BODY_JOINTS)])
+        worst = float(np.abs(commanded - settled_deg).max())
+        assert worst < 1.5, f"Δ=0 solve moved {worst:.2f}° off the stop pose"
 
     def test_disengaged_arm_holds_without_new_actions(self):
         """Clutch off = client stops sending; the follower must hold joints."""
         servicer = _make_follower()
-        _send_delta(servicer, 0.040)
+        _walk_delta(servicer, 0.040)
         _settle_physics(servicer)
         qpos_hold = servicer._data.qpos.copy()
         # No SendAction at all (disengaged): more physics steps, then compare.
@@ -295,14 +292,19 @@ class TestFollowerRelatch:
         assert drift_deg < 0.2, f"disengaged arm drifted {drift_deg:.3f}°"
 
     def test_following_continues_from_relatched_pose(self):
-        """After re-engage, a fresh +30 mm offset moves from the stop pose."""
+        """After re-engage, a fresh +30 mm body-frame offset moves the solve
+        from the stop pose (composition base stays the relatched pose)."""
         servicer = _make_follower()
-        _send_delta(servicer, 0.040)
+        _walk_delta(servicer, 0.040)
         _settle_physics(servicer)
         stop_fk = _fk_pos(servicer)
         servicer.SetReference(None, None)
-        _send_delta(servicer, 0.0)
-        _send_delta(servicer, 0.030)
-        offset = servicer._law.target_pose[:3, 3] - servicer._law.t_zero[:3, 3]
-        np.testing.assert_allclose(offset, [0.030, 0.0, 0.0], atol=1e-9)
-        np.testing.assert_allclose(servicer._law.t_zero[:3, 3], stop_fk, atol=1e-6)
+        zero = servicer._pose_delta_to_joint_action(_delta(0.0))
+        moved = servicer._pose_delta_to_joint_action(_delta(0.030))
+        worst = max(
+            abs(moved[f"{j}.pos"] - zero[f"{j}.pos"]) for j in BODY_JOINTS
+        )
+        assert worst > 0.5, "a fresh 30 mm offset did not move the solve"
+        np.testing.assert_allclose(
+            servicer._law.arm_reference[:3, 3], stop_fk, atol=1e-6
+        )

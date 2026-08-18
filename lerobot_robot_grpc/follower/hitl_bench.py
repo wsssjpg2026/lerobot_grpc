@@ -14,7 +14,9 @@ criteria (values from #05 freeze evidence, sim #11/#12/#13 methodology):
   must not jump to the hand's new pose (servicer stale-hold, body only).
 - LEADER-DOWN windows (leader server killed): no commands flow, the servos
   physically hold -- drift <= 2 deg, never a return to home.
-- SPHERE: FK end-effector radius stays <= base-safety-sphere + slew slack.
+- STEP: max per-frame joint step across the run stays within the law's
+  per-frame cap plus servo-tracking slack (PikaAnyArm official stack: the
+  cap replaces the >30° 200 Hz interpolation).
 - DESKTOP: minimum FK end-effector height -- evidence for the table-collision
   scoping decision (no pass/fail).
 
@@ -277,7 +279,7 @@ def evaluate_leader_down(
 
 
 # ---------------------------------------------------------------------------
-# FK (sphere + desktop evidence)
+# FK (desktop evidence)
 # ---------------------------------------------------------------------------
 
 
@@ -308,23 +310,30 @@ def ee_positions(rows: list[Row], xml_path: str) -> "np.ndarray":
 
 
 @dataclass(frozen=True)
-class SphereResult:
+class StepResult:
     passed: bool
-    max_radius_m: float
-    radius_m: float
-    slack_m: float
+    max_step_deg: float
+    worst_joint: str
 
 
-def evaluate_sphere(pos, radius_m: float, slack_m: float = 0.020) -> SphereResult:
-    """Base-safety-sphere judgement over the run's FK positions.
+def evaluate_step(rows: list[Row], tol_deg: float = 8.0) -> StepResult:
+    """Per-frame joint-step judgement over consecutive rows.
 
-    slack covers the arm finishing an in-flight slew step after the intent was
-    clamped (~5 mm/frame) plus IK residual, not a systematic overshoot.
+    The law caps each published joint step at max_dq_frame_deg (6.7, the
+    official >30° 200 Hz interpolation equivalent); tol_deg adds
+    servo-tracking slack for what the OBSERVATION columns see.  Judged on
+    sent==1 rows only (hold windows and leader-down gaps are excluded --
+    no command flows there and a timestamp gap is not a step).
     """
-    import numpy as np
-
-    max_r = float(np.linalg.norm(pos, axis=1).max())
-    return SphereResult(max_r <= radius_m + slack_m, max_r, radius_m, slack_m)
+    worst, worst_key = 0.0, BODY_JOINT_KEYS[0]
+    for prev, cur in zip(rows, rows[1:]):
+        if not (prev.get("sent") and cur.get("sent")):
+            continue
+        for key in BODY_JOINT_KEYS:
+            step = abs(cur[key] - prev[key])
+            if step > worst:
+                worst, worst_key = step, key
+    return StepResult(worst <= tol_deg, worst, _JOINT_NAMES[worst_key])
 
 
 # ---------------------------------------------------------------------------
@@ -341,7 +350,7 @@ class Report:
     gaps: list[Gap] = field(default_factory=list)
     gap_holds: list[GapHoldResult] = field(default_factory=list)
     leader_downs: list[LeaderDownResult] = field(default_factory=list)
-    sphere: SphereResult | None = None
+    step: StepResult | None = None
     desktop_min_z_m: float | None = None
     desktop_min_z_t: float | None = None
 
@@ -351,8 +360,8 @@ class Report:
         checks += [r.passed for r in self.relocks]
         checks += [g.passed for g in self.gap_holds]
         checks += [l.passed for l in self.leader_downs]
-        if self.sphere is not None:
-            checks.append(self.sphere.passed)
+        if self.step is not None:
+            checks.append(self.step.passed)
         return all(checks) if checks else False
 
     def render(self) -> str:
@@ -385,11 +394,11 @@ class Report:
                 f"{'PASS' if l.passed else 'FAIL'} drift={l.max_drift_deg:.2f}deg "
                 f"({l.worst_joint})"
             )
-        if self.sphere is not None:
-            s = self.sphere
+        if self.step is not None:
+            s = self.step
             lines.append(
-                f"SPHERE: max radius {s.max_radius_m * 1000:.0f}mm vs "
-                f"{s.radius_m * 1000:.0f}+{s.slack_m * 1000:.0f}mm "
+                f"STEP: max per-frame joint step {s.max_step_deg:.2f}deg "
+                f"(worst {s.worst_joint}, tol 8.0) "
                 f"{'PASS' if s.passed else 'FAIL'}"
             )
         if self.desktop_min_z_m is not None:
@@ -404,8 +413,6 @@ class Report:
 def build_report(
     rows: list[Row],
     xml_path: str | None = None,
-    sphere_radius_m: float = 0.72 * 0.543,
-    sphere_slack_m: float = 0.020,
 ) -> Report:
     """Every offline judgement over one bench CSV run."""
     report = Report()
@@ -421,11 +428,11 @@ def build_report(
         report.gap_holds.append(evaluate_gap_hold(rows, gap))
     for window in find_leader_down_windows(rows):
         report.leader_downs.append(evaluate_leader_down(rows, window))
+    report.step = evaluate_step(rows)
     if xml_path is not None:
         import numpy as np
 
         pos = ee_positions(rows, xml_path)
-        report.sphere = evaluate_sphere(pos, sphere_radius_m, sphere_slack_m)
         argmin = int(np.argmin(pos[:, 2]))
         report.desktop_min_z_m = float(pos[argmin, 2])
         report.desktop_min_z_t = float(rows[argmin]["t_s"])

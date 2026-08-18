@@ -1,15 +1,23 @@
-"""Seam tests for the shared PoseDeltaLaw (wayfinder pika-sense-real #03).
+"""Seam tests for the shared PoseDeltaLaw — PikaAnyArm official alignment.
 
-These prove the core design decision of #03: the entire assign + DLS +
-workspace-safety + slew + hold pipeline lives in PoseDeltaLaw behind a tiny
-interface, drivable with NO servicer and NO backend -- just a MuJoCo model and a
-joint vector.  This is exactly how the real Feetech servicer (#04) will drive it:
-read Present_Position -> qpos -> law.solve -> send_action.  The MuJoCo servicer
-is merely the first (sim) adapter; these tests exercise the law directly.
+The entire compose + DLS + official-safety-check pipeline lives in PoseDeltaLaw
+behind a tiny interface, drivable with NO servicer and NO backend -- just a
+MuJoCo model and a joint vector.  This is exactly how both the sim and the
+real Feetech servicer drive it: read qpos -> law.solve -> write joints.
+
+Under test (align-official-decisions.md decisions 2/4/6):
+
+- the official composition ``T_target = T_arm_ref @ Δ`` (translation follows
+  the reference orientation, not the room axes);
+- the official follower safety stack: FK consistency 0.3 m reject, 30° jump
+  warm-start reset, per-joint per-frame step cap, self-collision gate
+  (auto-bypassed on SO-101's visual-only meshes);
+- the stale hold (leader-stream gap freeze).
 """
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import numpy as np
@@ -20,20 +28,41 @@ pytest.importorskip("mujoco")
 import mujoco  # noqa: E402
 
 from lerobot_robot_grpc.follower.pose_delta_law import (  # noqa: E402
-    BaseSafetySphere,
-    ClearanceBubble,
-    FixedBubble,
     JointSolution,
-    NoBubble,
     PoseDeltaLaw,
-    WorkspacePolicy,
-    workspace_policy_from_legacy,
 )
 
 XML_PATH = Path(__file__).resolve().parents[1] / "assets" / "so101" / "scene.xml"
 
 BODY = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
 HOME_DEG = (0.0, -20.0, 60.0, -40.0, 0.0)
+
+# Synthetic 3-link chain WITH collision geometry (unlike the SO-101 visual
+# meshes, every link here carries a default-collision capsule) for the
+# self-collision gate tests.  All three links are jointed so every geom maps
+# onto the solved chain.
+_COLLISION_XML = """
+<mujoco>
+  <worldbody>
+    <body name="link1">
+      <joint name="j1" type="hinge" axis="0 0 1" range="-3.14 3.14"/>
+      <geom name="g0" type="capsule" fromto="0 0 0 0.2 0 0" size="0.01"
+            contype="1" conaffinity="1"/>
+      <body name="link2" pos="0.2 0 0">
+        <joint name="j2" type="hinge" axis="0 0 1" range="-3.14 3.14"/>
+        <geom name="g1" type="capsule" fromto="0 0 0 0.15 0 0" size="0.01"
+              contype="1" conaffinity="1"/>
+        <body name="link3" pos="0.15 0 0">
+          <joint name="j3" type="hinge" axis="0 0 1" range="-3.14 3.14"/>
+          <geom name="g2" type="capsule" fromto="0 0 0 0.15 0 0" size="0.01"
+                contype="1" conaffinity="1"/>
+          <site name="ee" pos="0.15 0 0" size="0.005"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
 
 
 def _model():
@@ -59,25 +88,20 @@ def _delta(dx=0.0, dy=0.0, dz=0.0, grip=0.0) -> dict[str, float]:
     }
 
 
-def _law(
-    workspace_policy: WorkspacePolicy = ClearanceBubble(),
-    residual_hold_m: float | None = None,
-    max_reach_override_m: float | None = None,
-) -> PoseDeltaLaw:
-    """A law with no slew / no deadband so tests speak in raw offsets."""
+def _law(**kwargs) -> PoseDeltaLaw:
     return PoseDeltaLaw(
         _model(),
         site_name="gripperframe",
         body_dofs=[0, 1, 2, 3, 4],
         body_joint_names=BODY,
         home_joints_deg=HOME_DEG,
-        workspace_policy=workspace_policy,
-        workspace_radius_m=0.0,
-        position_deadband_m=0.0,
-        rotation_deadband_rad=0.0,
-        residual_hold_m=residual_hold_m,
-        max_reach_override_m=max_reach_override_m,
+        **kwargs,
     )
+
+
+def _fk_pos(law: PoseDeltaLaw, qpos) -> np.ndarray:
+    pose = law._fk(np.asarray(qpos, dtype=float))
+    return pose[:3, 3]
 
 
 # ---------------------------------------------------------------------------
@@ -110,61 +134,112 @@ class TestInterface:
 
 
 # ---------------------------------------------------------------------------
-# WorkspacePolicy is the pluggable safety seam
+# Official composition: T_target = T_arm_ref @ Δ
 # ---------------------------------------------------------------------------
 
 
-class TestWorkspacePolicy:
-    def test_clearance_clamps_relative_to_t_zero(self):
-        pol = ClearanceBubble(ratio=0.5, floor_m=0.0)
-        tz = np.array([0.3, 0.0, 0.0])
-        max_reach = 0.5
-        # clearance = 0.5 - 0.3 = 0.2 -> radius 0.1; a 0.3 m delta clamps to 0.1
-        raw = tz + np.array([0.3, 0.0, 0.0])
-        out = pol.clamp(raw, tz, max_reach)
-        np.testing.assert_allclose(out, tz + np.array([0.1, 0.0, 0.0]), atol=1e-9)
+class TestOfficialComposition:
+    def test_body_delta_rotates_through_reference(self):
+        """A body-frame +X delta must move the EE along the reference's X axis
+        in the base frame (translation follows the hand orientation), not
+        along the base X axis."""
+        # Reference latched with the base panned +90 deg: R_ref @ x̂ = +ŷ.
+        panned = _home_qpos().copy()
+        panned[0] += math.pi / 2.0
+        law = _law()
+        law.lock_reference(panned)
+        ref = law.arm_reference[:3, 3]
 
-    def test_base_sphere_clamps_absolute_intent(self):
-        pol = BaseSafetySphere(ratio=0.72)
-        max_reach = 0.5
-        # intent at 0.6 m beyond the 0.36 m sphere -> pulled back to the sphere
-        raw = np.array([0.6, 0.0, 0.0])
-        out = pol.clamp(raw, np.zeros(3), max_reach)
-        np.testing.assert_allclose(np.linalg.norm(out), 0.36, atol=1e-9)
+        sol = law.solve(_delta(dx=0.05), panned)
+        moved = _fk_pos(law, [math.radians(sol.joint_action[f"{j}.pos"]) for j in BODY]
+                        + [0.0])
+        offset = moved - ref
+        # The dominant motion is +Y (base left), NOT +X (the old room-axis
+        # semantics would have moved +X for a world-frame dx).
+        assert abs(offset[1]) > 3.0 * abs(offset[0])
 
-    def test_no_bubble_passes_through(self):
-        pol = NoBubble()
-        raw = np.array([9.0, 9.0, 9.0])
-        out = pol.clamp(raw, np.zeros(3), 0.5)
-        assert out is raw
-
-    def test_legacy_builder_maps_three_modes(self):
-        assert isinstance(workspace_policy_from_legacy(None), ClearanceBubble)
-        assert isinstance(workspace_policy_from_legacy(0.0), NoBubble)
-        assert isinstance(workspace_policy_from_legacy(0.123), FixedBubble)
-        assert workspace_policy_from_legacy(0.123).effective_radius(None, 0.5) == 0.123
-
-    def test_policies_are_workspace_policies(self):
-        for p in (NoBubble(), ClearanceBubble(), FixedBubble(0.1), BaseSafetySphere()):
-            assert isinstance(p, WorkspacePolicy)
-
-    def test_base_sphere_rejects_full_extension_through_law(self):
-        """A base sphere sized to 72% of reach must keep the intent inside it."""
-        law = _law(workspace_policy=BaseSafetySphere(0.72))
+    def test_zero_delta_holds_the_reference(self):
+        law = _law()
         qpos = _home_qpos()
         law.lock_reference(qpos)
-        law.solve(_delta(dx=2.0), qpos)  # huge outward push
-        intent = law.target_pose[:3, 3]
-        radius = 0.72 * law.max_reach_m
-        assert float(np.linalg.norm(intent)) <= radius + 1e-9
+        sol = law.solve(_delta(), qpos)
+        sent = [math.radians(sol.joint_action[f"{j}.pos"]) for j in BODY]
+        np.testing.assert_allclose(sent, qpos[:5], atol=np.radians(1.5))
 
 
 # ---------------------------------------------------------------------------
-# Holds are law-internal and parameterised
+# Official safety stack
 # ---------------------------------------------------------------------------
 
 
-class TestHolds:
+class TestFkConsistency:
+    def test_far_unreachable_target_rejected_and_held(self):
+        """Official piper_IK check: a solution whose FK deviates >0.3 m from
+        the target is rejected -- hold the last published joints."""
+        law = _law()
+        qpos = _home_qpos()
+        law.lock_reference(qpos)
+        first = law.solve(_delta(0.03), qpos).joint_action
+        far = law.solve(_delta(dx=2.0), qpos)
+        assert far.rejected and far.held
+        for j in BODY:
+            assert far.joint_action[f"{j}.pos"] == first[f"{j}.pos"]
+
+    def test_reachable_target_not_rejected(self):
+        law = _law()
+        qpos = _home_qpos()
+        law.lock_reference(qpos)
+        sol = law.solve(_delta(0.05), qpos)
+        assert not sol.rejected and not sol.held
+
+
+class TestJumpReset:
+    def test_solution_jump_resets_warm_start(self):
+        """Official 30 deg rule: a solution >30 deg per joint from the
+        previous one resets the warm start (next solve re-seeds from the
+        measured arm pose)."""
+        law = _law()
+        qpos = _home_qpos()
+        law.lock_reference(qpos)
+        law.solve(_delta(0.02), qpos)
+        assert law._warm_seed is not None
+        # A reachable-but-large retarget: >30 deg of joint motion.
+        jumped = law.solve(_delta(dz=-0.15, dy=0.10), qpos)
+        if not jumped.jumped:
+            pytest.skip("retarget stayed under 30 deg on this model")
+        assert law._warm_seed is None  # reset: next solve seeds from qpos
+
+
+class TestFrameCap:
+    def test_published_step_capped_per_joint(self):
+        """The official >30 deg 200 Hz interpolation equivalent: no published
+        joint step exceeds max_dq_frame_deg, even toward a large retarget."""
+        law = _law()
+        qpos = _home_qpos()
+        law.lock_reference(qpos)
+        prev = np.array(qpos[:5], dtype=float)
+        for _ in range(3):
+            sol = law.solve(_delta(dz=0.12, dx=0.10), qpos)
+            sent = np.radians(
+                [sol.joint_action[f"{j}.pos"] for j in BODY]
+            )
+            assert float(np.abs(sent - prev).max()) <= math.radians(6.7) + 1e-9
+            prev = sent
+            if sol.held:
+                break
+
+    def test_first_step_capped_from_measured_qpos(self):
+        """Official interpolation seeds its baseline from the measured joints
+        -- the first published step after a latch is capped too."""
+        law = _law()
+        qpos = _home_qpos()
+        law.lock_reference(qpos)
+        sol = law.solve(_delta(dx=0.3), qpos)  # large first intent
+        sent = np.radians([sol.joint_action[f"{j}.pos"] for j in BODY])
+        assert float(np.abs(sent - qpos[:5]).max()) <= math.radians(6.7) + 1e-9
+
+
+class TestStaleHold:
     def test_stale_flag_holds_last_action(self):
         law = _law()
         qpos = _home_qpos()
@@ -178,87 +253,52 @@ class TestHolds:
             assert held.joint_action[f"{j}.pos"] == fresh[f"{j}.pos"]
 
 
-class TestEscapeFlippedThreshold:
-    """escape_flipped_deg parameterises the elbow sign-flip leg of the
-    workspace escape (sim default -15 deg, i.e. sign-vs-the-+60-sim-home).
-    None disables the flip leg entirely -- the joint-limit leg stays.  The
-    real arm's whole working range is negative elbow (#07: the wall caps
-    +2 deg), so a sim-sign threshold would fire every frame mid-work."""
+# ---------------------------------------------------------------------------
+# Self-collision gate: capability auto-detect
+# ---------------------------------------------------------------------------
 
-    def _law_with(self, escape_flipped_deg, home_deg=HOME_DEG):
-        return PoseDeltaLaw(
-            _model(),
-            site_name="gripperframe",
-            body_dofs=[0, 1, 2, 3, 4],
-            body_joint_names=BODY,
-            home_joints_deg=home_deg,
-            workspace_policy=ClearanceBubble(),
-            workspace_radius_m=0.0,
-            position_deadband_m=0.0,
-            rotation_deadband_rad=0.0,
-            escape_flipped_deg=escape_flipped_deg,
+
+class TestSelfCollisionGate:
+    def test_so101_scene_enables_the_gate(self):
+        """The SO-101 scene carries a collision-geom group (default
+        contype/conaffinity mesh geoms on every arm link) alongside the
+        visual-only meshes — the auto-detect finds 43 non-adjacent pairs and
+        the gate is ON.  Verified semantics on this model: no false
+        positives across the ordinary workspace, true positives on deep
+        folds (shoulder vs lower-arm/wrist penetration)."""
+        law = _law()
+        assert law.collision_enabled
+        home = np.zeros(6)
+        home[:5] = np.radians(np.array(HOME_DEG, dtype=float))
+        assert not law._in_self_collision(home)
+        real_rest = np.zeros(6)
+        real_rest[:5] = np.radians(np.array((0.0, 30.0, -20.0, 0.0, 0.0)))
+        assert not law._in_self_collision(real_rest)
+        # Deep fold drives the arm into the shoulder (measured 2026-08-18:
+        # shoulder vs lower_arm/wrist penetrations of 3-16 mm).
+        folded = np.radians(np.array((-80.0, 10.0, 95.0, 80.0, 0.0)).astype(float))
+        probe = np.zeros(6)
+        probe[:5] = folded
+        assert law._in_self_collision(probe)
+
+    def test_collision_model_enables_and_detects(self):
+        model = mujoco.MjModel.from_xml_string(_COLLISION_XML)
+        law = PoseDeltaLaw(
+            model,
+            site_name="ee",
+            body_dofs=[0, 1, 2],
+            body_joint_names=("j1", "j2", "j3"),
+            home_joints_deg=(0.0, 0.0, 0.0),
         )
+        assert law.collision_enabled
+        # g0 (link1) x g2 (link3) is the only non-adjacent pair with bits;
+        # g0-g1 and g1-g2 sit on parent/child links and are excluded.
+        assert law._collision_pairs == {frozenset((0, 2))}
 
-    def _droop_elbow_qpos(self, elbow_deg: float) -> np.ndarray:
-        q = _home_qpos()
-        q[2] = np.radians(elbow_deg)
-        return q
-
-    def test_default_threshold_triggers_on_sim_sign_flip(self):
-        law = self._law_with(escape_flipped_deg=-15.0)
-        qpos = self._droop_elbow_qpos(-20.0)
-        law.lock_reference(qpos)
-        law.solve(_delta(0.01), qpos)
-        assert law.escaped, "elbow -20 deg is 'flipped' vs the sim home (+60)"
-
-    def test_none_disables_the_flip_leg(self):
-        law = self._law_with(escape_flipped_deg=None)
-        qpos = self._droop_elbow_qpos(-20.0)
-        law.lock_reference(qpos)
-        law.solve(_delta(0.01), qpos)
-        assert not law.escaped, "flip leg off: a negative-elbow solve is normal"
-
-    def test_custom_threshold_moves_the_trip_point(self):
-        # Home AT the seed posture so the nullspace rest task cannot drag the
-        # solve across the threshold -- the trip point alone decides.
-        law = self._law_with(
-            escape_flipped_deg=-60.0, home_deg=(0.0, -20.0, -20.0, -40.0, 0.0)
-        )
-        qpos = self._droop_elbow_qpos(-20.0)
-        law.lock_reference(qpos)
-        law.solve(_delta(0.01), qpos)
-        assert not law.escaped, "-20 deg is above the -60 deg threshold"
-
-    def test_custom_threshold_still_trips_deep_extension(self):
-        law = self._law_with(
-            escape_flipped_deg=-60.0, home_deg=(0.0, -20.0, -65.0, -40.0, 0.0)
-        )
-        qpos = self._droop_elbow_qpos(-65.0)
-        law.lock_reference(qpos)
-        law.solve(_delta(0.01), qpos)
-        assert law.escaped, "-65 deg is below the -60 deg threshold"
-
-    def test_residual_hold_returns_last_when_unreachable(self):
-        # residual hold on; with the bubble off, a target far beyond reach
-        # genuinely cannot be reached -> the law holds the previous action.
-        law = _law(residual_hold_m=0.015, workspace_policy=NoBubble())
-        qpos = _home_qpos()
-        law.lock_reference(qpos)
-        first = law.solve(_delta(0.03), qpos).joint_action
-        unreachable = law.solve(_delta(dx=2.0), qpos)
-        assert unreachable.pos_err_m > 0.015  # confirmed unreachable
-        assert unreachable.held
-        for j in BODY:
-            assert unreachable.joint_action[f"{j}.pos"] == first[f"{j}.pos"]
-
-    def test_residual_hold_off_walks_toward_unreachable(self):
-        # residual hold off (sim default): an unreachable target is
-        # overshoot-limited (clipped toward last joints) but NOT held.
-        law = _law(residual_hold_m=None, workspace_policy=NoBubble())
-        qpos = _home_qpos()
-        law.lock_reference(qpos)
-        sol = law.solve(_delta(dx=2.0), qpos)
-        assert not sol.held
+        straight = np.zeros(3)                      # chain extended: no contact
+        assert not law._in_self_collision(straight)
+        folded = np.array([0.0, math.pi, 0.0])      # link3 folded back onto link1
+        assert law._in_self_collision(folded)
 
 
 # ---------------------------------------------------------------------------
@@ -269,24 +309,15 @@ class TestEscapeFlippedThreshold:
 class TestBackendInjection:
     def test_fk_seed_comes_from_qpos_not_live_state(self):
         """The law never reads a live sim; FK is derived from the qpos argument.
-        Feeding a deliberately wrong qpos moves T_zero accordingly -- this is
+        Feeding a deliberately wrong qpos moves T_arm_ref accordingly -- this is
         the real servicer's injection point (Present_Position -> rad)."""
         law = _law()
         tilted = _home_qpos().copy()
         tilted[0] += np.radians(30.0)  # pan the base 30 deg
         law.lock_reference(tilted)
-        # T_zero moved laterally vs the home lock
+        # T_arm_ref moved laterally vs the home lock
         home_lock = _law()
         home_lock.lock_reference(_home_qpos())
-        assert not np.allclose(law.t_zero[:3, 3], home_lock.t_zero[:3, 3])
-
-    def test_max_reach_override_flows_to_sphere(self):
-        """A calibration-derived max_reach reaches the base sphere radius."""
-        law = _law(
-            workspace_policy=BaseSafetySphere(0.72),
-            max_reach_override_m=0.300,  # pretend calibration says 300 mm
+        assert not np.allclose(
+            law.arm_reference[:3, 3], home_lock.arm_reference[:3, 3]
         )
-        assert law.max_reach_m == pytest.approx(0.300)
-        qpos = _home_qpos()
-        law.lock_reference(qpos)
-        assert law.workspace_bubble_m == pytest.approx(0.72 * 0.300)

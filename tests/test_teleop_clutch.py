@@ -154,11 +154,6 @@ def _make_follower() -> MuJoCoSO101Servicer:
         xml_path=str(XML_PATH),
         action_mode="pose_delta",
         render=False,
-        # Production deadbands (1.0 mm / 0.005 rad): a repeated frozen offset
-        # must hit the deadband path so micro IK re-seeds cannot nudge the arm.
-        position_deadband_m=0.001,
-        rotation_deadband_rad=0.005,
-        workspace_radius_m=0.0,  # unlimited slew — tests talk in offsets
     )
     servicer.Connect(None, None)
     return servicer
@@ -192,9 +187,13 @@ def _settle_physics(servicer: MuJoCoSO101Servicer, steps: int = 600) -> None:
 class TestFollowerHoldWithLiveGripper:
     def test_frozen_offset_holds_arm_while_gripper_moves(self):
         """Hold = the SAME frozen offset keeps arriving; the arm must not move
-        but the gripper must follow the hand (official PikaAnyArm clutch)."""
+        but the gripper must follow the hand (official PikaAnyArm clutch).
+        The offset is first walked to convergence (the per-frame step cap
+        limits each frame), then the frozen-offset contract holds exactly."""
         servicer = _make_follower()
         _send_delta(servicer, 0.040, gripper=20.0)
+        for _ in range(30):  # walk the cap to the converged commanded joints
+            _send_delta(servicer, 0.040, gripper=20.0)
         _settle_physics(servicer)
         qpos_hold = servicer._data.qpos.copy()
         body_ctrl_hold = servicer._target_ctrl[: len(BODY_JOINTS)].copy()

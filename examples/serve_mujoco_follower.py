@@ -29,7 +29,6 @@ The server is transparent to gRPC clients: ``teleop_so101.py``,
 
 import argparse
 import logging
-import math
 import time
 from pathlib import Path
 
@@ -92,66 +91,17 @@ def main():
         "(default: 0.20; 1.0 = no smoothing, step-function ctrl)",
     )
     parser.add_argument(
-        "--position-deadband-mm",
-        type=float,
-        default=1.0,
-        help="Skip IK when the slewed command pose moves less than this (default: 1.0; 0 = disabled)",
-    )
-    parser.add_argument(
-        "--rotation-deadband-deg",
-        type=float,
-        default=0.3,
-        help="Skip IK when delta_rot is below this threshold in degrees (default: 0.3; 0 = disabled)",
-    )
-    parser.add_argument(
-        "--workspace-radius-mm",
-        type=float,
-        default=15.0,
-        help="Max T_cmd slew toward T_intent per frame in mm (default: 15; 0 = unlimited)",
-    )
-    parser.add_argument(
-        "--workspace-bubble-mm",
-        type=float,
-        default=None,
-        help="Max |ΔT| the follower applies (mm). Default: auto = 0.6 × URDF "
-        "max reach (sampled at startup); 0 disables the clamp",
-    )
-    parser.add_argument(
-        "--translation-rot-weight",
-        type=float,
-        default=0.0,
-        help="DLS rot_weight for pure translations (default: 0.0 = position-only; "
-        "lets shoulder_pan track horizontal arcs without a wrist yaw penalty)",
-    )
-    parser.add_argument(
-        "--snap-pos-err-mm",
-        type=float,
-        default=8.0,
-        help="Log overshoot when IK residual exceeds this; intent is NOT rewritten (default 8 mm)",
-    )
-    parser.add_argument(
-        "--rest-gain",
-        type=float,
-        default=0.08,
-        help="Null-space gain that unfolds the elbow toward home when it is near 0° (default 0.08)",
-    )
-    parser.add_argument(
         "--max-dq-deg",
         type=float,
         default=6.0,
-        help="Per-iteration per-joint IK step clip in degrees (default 6)",
+        help="DLS per-iteration per-joint step clip in degrees (default 6)",
     )
     parser.add_argument(
-        "--elbow-floor-deg",
+        "--max-dq-frame-deg",
         type=float,
-        default=None,
-        help="Optional hard minimum elbow_flex in degrees (default: none; soft rest only)",
-    )
-    parser.add_argument(
-        "--home-capture-mm",
-        type=float,
-        default=80.0,
-        help="Strengthen home-configuration rest inside this radius of T_zero (default 80)",
+        default=6.7,
+        help="Per-joint per-frame cap on the published step — the official "
+        ">30° 200Hz-interpolation equivalent (default 6.7 = 200°/s at 30 Hz)",
     )
     args = parser.parse_args()
 
@@ -171,20 +121,8 @@ def main():
         gripper_max_distance_mm=args.gripper_max_distance_mm,
         home_joints_deg=home_joints_deg,
         ctrl_smoothing_alpha=args.ctrl_smoothing_alpha,
-        position_deadband_m=args.position_deadband_mm / 1000.0,
-        rotation_deadband_rad=math.radians(args.rotation_deadband_deg),
-        workspace_radius_m=args.workspace_radius_mm / 1000.0,
-        translation_rot_weight=args.translation_rot_weight,
-        snap_pos_err_m=args.snap_pos_err_mm / 1000.0,
-        rest_gain=args.rest_gain,
         max_dq_deg=args.max_dq_deg,
-        elbow_floor_deg=args.elbow_floor_deg,
-        home_capture_m=args.home_capture_mm / 1000.0,
-        workspace_bubble_m=(
-            args.workspace_bubble_mm / 1000.0
-            if args.workspace_bubble_mm is not None
-            else None
-        ),
+        max_dq_frame_deg=args.max_dq_frame_deg,
     )
     server = FollowerServer(FollowerServerConfig(address=args.address), servicer)
     server.start()

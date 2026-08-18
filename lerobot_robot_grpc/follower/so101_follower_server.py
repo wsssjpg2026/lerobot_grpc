@@ -22,7 +22,7 @@ from .mujoco_follower_server import (
     JOINTS,
     norm_value_to_rad,
 )
-from .pose_delta_law import BaseSafetySphere, PoseDeltaLaw
+from .pose_delta_law import PoseDeltaLaw
 from .utils import (
     H264FrameEncoder,
     H264_AVAILABLE,
@@ -215,16 +215,11 @@ class SO101FollowerServicer(FollowerServicer):
         bus_call_timeout_s: float = 5.0,
         action_mode: str = "joint",
         home_joints_deg: tuple[float, ...] = REAL_REST_POSTURE_DEG,
-        workspace_sphere_ratio: float = 0.72,
-        residual_hold_m: float = 0.018,
-        max_reach_override_m: float | None = 0.543,
         stale_timeout_s: float = 1.0,
-        workspace_radius_m: float = 0.005,
-        max_dq_deg: float = 4.0,
+        max_dq_deg: float = 6.0,
+        max_dq_frame_deg: float = 6.7,
         gripper_max_distance_mm: float = DEFAULT_GRIPPER_MAX_DISTANCE_MM,
         elbow_max_deg: float | None = 2.0,
-        home_rest_gain: float = 0.08,
-        escape_flipped_deg: float | None = -60.0,
     ):
         self.robot = robot
         if camera_encoding not in ("jpeg", "h264"):
@@ -246,7 +241,11 @@ class SO101FollowerServicer(FollowerServicer):
         # Real-arm adapter over the same PoseDeltaLaw the sim drives: this
         # servicer only reads Present_Position -> rad as the FK/IK seed and
         # writes the solved joint_action via send_action.  The MuJoCo model is
-        # loaded purely as a kinematics oracle (no sim state).
+        # loaded purely as a kinematics oracle (no sim state).  The law runs
+        # the PikaAnyArm official safety stack (see pose_delta_law.py):
+        # IK hard limits (model + measured calibration range + elbow wall),
+        # 30° jump warm-start reset, FK consistency 0.3 m, per-frame step cap,
+        # self-collision gate (auto-bypassed on SO-101's visual-only meshes).
         self._law: PoseDeltaLaw | None = None
         if action_mode == "pose_delta":
             import mujoco
@@ -262,23 +261,9 @@ class SO101FollowerServicer(FollowerServicer):
                 body_dofs=list(range(len(BODY_JOINTS))),
                 body_joint_names=BODY_JOINTS,
                 home_joints_deg=home_joints_deg,
-                # Real-arm safety posture (map Notes): base safety sphere at
-                # max_reach x ratio, residual-hold 15-20 mm, slew tightened to
-                # ~5 mm/frame + 3-6 deg/tick (not the sim 15 mm debug speed).
-                workspace_policy=BaseSafetySphere(workspace_sphere_ratio),
-                workspace_radius_m=workspace_radius_m,
                 max_dq_deg=max_dq_deg,
-                residual_hold_m=residual_hold_m,
-                max_reach_override_m=max_reach_override_m,
+                max_dq_frame_deg=max_dq_frame_deg,
                 gripper_max_distance_mm=gripper_max_distance_mm,
-                # Real solver bias (#07): no reachable home exists to snap
-                # back to, so the near-reference rest gain matches the far
-                # gain (the sim's 0.40 snap would crawl a real arm); and the
-                # elbow-flip escape threshold is re-based to deep extension --
-                # the sim's -15 deg sits inside the real all-negative working
-                # range and would fire every frame.
-                home_rest_gain=home_rest_gain,
-                escape_flipped_deg=escape_flipped_deg,
             )
         # Stale-hold (real-only): wall-clock of the last pose_delta SendAction;
         # a gap > stale_timeout_s makes the next solve hold the last joints.
@@ -725,8 +710,8 @@ class SO101FollowerServicer(FollowerServicer):
         if self._law is not None:
             self._lock_t_zero_from_bus("set_reference")
             logger.info(
-                "SetReference: T_zero re-locked at current FK pos=[%.4f %.4f %.4f]",
-                *self._law.t_zero[:3, 3],
+                "SetReference: T_arm_ref re-locked at current FK pos=[%.4f %.4f %.4f]",
+                *self._law.arm_reference[:3, 3],
             )
         else:
             logger.info("SetReference: no-op (action_mode=%s)", self._action_mode)
@@ -851,7 +836,7 @@ class SO101FollowerServicer(FollowerServicer):
         return device_pb2.Action(features=list(encode_feature(self._act_ft_info, act_dict)))
 
     def _solve_pose_delta(self, delta_action: dict[str, float]) -> dict[str, float]:
-        """Runs the shared law on one latch-once delta, seeding FK/IK from the
+        """Runs the shared law on one raw leader delta, seeding FK/IK from the
         arm's measured joints.  Caller must hold the bus lock: the
         Present_Position read and the send_action write ride the SAME hold, so
         the 30 Hz observation stream interleaves between actions, never
@@ -867,8 +852,9 @@ class SO101FollowerServicer(FollowerServicer):
         sol = self._law.solve(delta_action, qpos_rad, stale=stale)
         if sol.held:
             logger.info(
-                "pose_delta hold: stale=%s residual=%.1fmm -- keeping last joints.",
-                sol.stale, sol.pos_err_m * 1000.0,
+                "pose_delta hold: stale=%s rejected=%s collided=%s pos_err=%.1fmm "
+                "-- keeping last joints.",
+                sol.stale, sol.rejected, sol.collided, sol.pos_err_m * 1000.0,
             )
         return sol.joint_action
 
