@@ -583,17 +583,21 @@ class PoseDeltaLaw:
             raw_intent_pos, t_zero[:3, 3], self._max_reach_m
         )
         radius = self._workspace_policy.effective_radius(t_zero[:3, 3], self._max_reach_m)
-        if radius > 0.0:
-            requested = float(np.linalg.norm(delta_pos))
-            if requested > radius:
-                now = time.time()
-                if now - self._last_clamp_log_ts > 1.0:
-                    self._last_clamp_log_ts = now
-                    logger.info(
-                        "WORKSPACE clamp: dT %.0fmm -> %.0fmm (radius %.0fmm, %s)",
-                        requested * 1000.0, radius * 1000.0, radius * 1000.0,
-                        type(self._workspace_policy).__name__,
-                    )
+        # Log when the clamp actually moved the intent, not on |delta| vs radius:
+        # the BaseSafetySphere bounds the ABSOLUTE intent (|T_zero + delta|), so
+        # the legacy |delta| > radius guard never fired with T_zero near the
+        # sphere edge and the clamp was silent (05 bench r3: 0 clamp lines while
+        # every outward intent was being pulled in).
+        clamp_shift_m = float(np.linalg.norm(clamped_intent_pos - raw_intent_pos))
+        if clamp_shift_m > 1e-6:
+            now = time.time()
+            if now - self._last_clamp_log_ts > 1.0:
+                self._last_clamp_log_ts = now
+                logger.info(
+                    "WORKSPACE clamp: intent pulled %.0fmm inside the %.0fmm sphere (%s)",
+                    clamp_shift_m * 1000.0, radius * 1000.0,
+                    type(self._workspace_policy).__name__,
+                )
 
         intent = np.eye(4)
         intent[:3, 3] = clamped_intent_pos
