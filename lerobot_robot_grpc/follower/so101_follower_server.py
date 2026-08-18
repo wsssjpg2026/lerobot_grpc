@@ -80,7 +80,7 @@ _DEFAULT_KINEMATICS_XML = (
 # the body immovable while the gripper followed (residual 26.8 mm > 18 mm
 # hold, manip 0.0133 at the droop).
 #
-# Chosen offline (lerobot-grpc-serve, /tmp/rest_scan.py, 2026-08-17) under the effective
+# Chosen offline (lrg, now lerobot-grpc-serve, /tmp/rest_scan.py, 2026-08-17) under the effective
 # limits (model n follower.json calibration n elbow wall +2 deg), against
 # the measured R1 droop seed (pan 6.3 / lift -2.4 / elbow +1.1 / wf +46.4 /
 # wr -5.6): manip 0.0134, FK radius 463 mm, all six 15 mm axis intents

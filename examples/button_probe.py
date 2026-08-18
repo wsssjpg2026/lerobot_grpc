@@ -193,7 +193,7 @@ def report(raw_rows: list[tuple[float, dict]]) -> int:
         commands = [frames[max(bisect_right(frame_times, p[0]) - 1, 0)][1]
                     for p in poses]
         events = squeeze_events(poses, commands)
-        print("squeeze events (glove closures): %d" % len(events))
+        print("squeeze events: %d" % len(events))
         for i, ev in enumerate(events):
             print("  #%02d  +%07.3fs  closed %.2fs  min %5.1f deg / %4.1f mm  %s"
                   % (i + 1, ev.t0 - origin, ev.t1 - ev.t0, ev.min_angle_deg,
