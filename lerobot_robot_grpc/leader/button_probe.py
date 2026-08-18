@@ -135,7 +135,7 @@ def gripper_mm(angle_rad: float) -> float:
 
 @dataclass(frozen=True)
 class Squeeze:
-    """One glove closure: gripper angle dropped below ENTER_DEG then re-opened."""
+    """One squeeze: gripper angle dropped below ENTER_DEG then re-opened."""
 
     t0: float
     t1: float
@@ -146,7 +146,7 @@ class Squeeze:
 
 
 def squeeze_events(poses: Sequence[Pose], commands: Sequence[int]) -> list[Squeeze]:
-    """Segment the recording into glove closures and their trigger outcome.
+    """Segment the recording into squeezes and their trigger outcome.
 
     A squeeze starts when the angle drops below SQUEEZE_ENTER_DEG and ends
     when it re-rises above SQUEEZE_EXIT_DEG; ``triggered`` is True when the
