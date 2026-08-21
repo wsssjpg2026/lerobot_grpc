@@ -43,6 +43,19 @@ GRIPPER_KEYS: tuple[str, ...] = ("gripper.distance",)
 ACTION_KEYS: tuple[str, ...] = DELTA_POS_KEYS + DELTA_ROT_KEYS + GRIPPER_KEYS
 
 
+def action_keys(prefix: str | None = None) -> tuple[str, ...]:
+    """Return the pose-delta keys, optionally namespaced to one arm.
+
+    The unprefixed schema remains the compatibility default for SO-101.  S1
+    uses ``prefix="left"`` (and later ``"right"``) so recorded intent keeps
+    its arm identity and can grow into a bimanual schema without renaming.
+    """
+    if prefix is None or not prefix.strip():
+        return ACTION_KEYS
+    normalized = prefix.strip().strip(".")
+    return tuple(f"{normalized}.{key}" for key in ACTION_KEYS)
+
+
 def _scalar_feature_info(key: str) -> "device_pb2.OneFeatureInfo":
     """Builds a CRITICAL FLOAT32 scalar feature info for *key*.
 
@@ -60,11 +73,13 @@ def _scalar_feature_info(key: str) -> "device_pb2.OneFeatureInfo":
     )
 
 
-def build_pose_delta_feature_info() -> "dict[str, device_pb2.OneFeatureInfo]":
+def build_pose_delta_feature_info(
+    prefix: str | None = None,
+) -> "dict[str, device_pb2.OneFeatureInfo]":
     """Returns the pose-delta action schema keyed by feature name.
 
     The returned dict is consumed directly by
     ``encode_feature`` / ``load_feature`` (which subscript by key) and by
     ``GetInfoResponse`` (which wraps ``.values()`` into a list).
     """
-    return {key: _scalar_feature_info(key) for key in ACTION_KEYS}
+    return {key: _scalar_feature_info(key) for key in action_keys(prefix)}

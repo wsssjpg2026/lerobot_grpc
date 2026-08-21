@@ -1,0 +1,1591 @@
+#usda 1.0
+(
+    customLayerData = {
+        dictionary cameraSettings = {
+            dictionary Front = {
+                double3 position = (5, 0, 0)
+                double radius = 5
+            }
+            dictionary Perspective = {
+                double3 position = (3.4495065788308668, -0.026967235541538553, 0.5782819876356012)
+                double3 target = (-2.4961107734087027, -0.034359406110381914, 0.28728035223132997)
+            }
+            dictionary Right = {
+                double3 position = (0, -5, 0)
+                double radius = 5
+            }
+            dictionary Top = {
+                double3 position = (0, 0, 5)
+                double radius = 5
+            }
+            string boundCamera = "/OmniverseKit_Persp"
+        }
+        dictionary omni_layer = {
+            string authoring_layer = "./galbot_s1-v2_1_0-A21-ge103in.usd"
+        }
+        dictionary renderSettings = {
+            double "rtx:directLighting:sampledLighting:maxRayUnexposedIntensity" = 6399.9990234375
+            double "rtx:indirectDiffuse:maxRayUnexposedIntensity" = 6399.9990234375
+            double "rtx:pathtracing:fireflyFilter:maxPerEmissiveUnexposedIntensity" = 3199.99951171875
+            double "rtx:pathtracing:fireflyFilter:maxUnexposedIntensityPerSample" = 3199.99951171875
+            double "rtx:pathtracing:fireflyFilter:maxUnexposedIntensityPerSampleDiffuse" = 3199.99951171875
+            double "rtx:raytracing:inscattering:maxRTSampleUnexposedIntensity" = 204799.96875
+            double "rtx:translucency:maxRayUnexposedIntensity" = 19199.998046875
+        }
+    }
+    defaultPrim = "galbot_s1_v2_1_0_A21_ge103in"
+    doc = """Generated from Composed Stage of root layer /home/galbot/桌面/s1_0723/galbot_s1_ge103in/usd/galbot_s1-v2_1_0-A21-ge103in/galbot_s1-v2_1_0-A21-ge103in.usd
+
+
+Generated from Composed Stage of root layer /home/galbot/桌面/s1_0723/galbot_s1_ge103in/usd/galbot_s1-v2_1_0-A21-ge103in/payloads/base.usd
+"""
+    metersPerUnit = 1
+    subLayers = [
+        @./robot.usda@
+    ]
+    upAxis = "Z"
+)
+
+def Xform "galbot_s1_v2_1_0_A21_ge103in"
+{
+    quatd xformOp:orient = (1, 0, 0, 0)
+    double3 xformOp:scale = (1, 1, 1)
+    double3 xformOp:translate = (0, 0, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+    def Xform "base_link" (
+        instanceable = false
+    )
+    {
+        quatd xformOp:orient = (1, 0, 0, 0)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (5.960464477539063e-8, -4.71482053399086e-9, -4.172325134277344e-7)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "omni_chassis_base_link"
+        {
+            quatd xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+            def Xform "omni_chassis_column_mount_link"
+            {
+                quatd xformOp:orient = (1, 0, 0, 0)
+                double3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (-0.07150000333786011, 0, 0.5544099807739258)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                def Xform "column_base_link"
+                {
+                    quatd xformOp:orient = (1, 0, 0, 0)
+                    double3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (0, 0, 0)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+            }
+        }
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "omni_chassis_base_link" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh>
+            )
+            {
+                token visibility = "inherited"
+            }
+
+            def Xform "column_base_link" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_1>
+            )
+            {
+                token visibility = "inherited"
+                quatd xformOp:orient = (1, 0, 0, 0)
+                double3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (-0.07150000334, 0, 0.5544099808)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "omni_chassis_base_link" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_2>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+
+            def Xform "column_base_link" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_3>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+                quatd xformOp:orient = (1, 0, 0, 0)
+                double3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (-0.07150000334, 0, 0.5544099808)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+        }
+    }
+
+    def Xform "torso_lift_link1"
+    {
+        quatd xformOp:orient = (0.9999999999999994, -4.929400651713131e-9, 3.159437730207386e-8, 9.365861238254947e-9)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (-0.0715000182390213, -7.450580596923828e-9, 0.5544101595878601)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "torso_base_link"
+        {
+            quatd xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+            def Xform "torso_head_mount_link"
+            {
+                quatd xformOp:orient = (1, 0, 0, 0)
+                double3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (0, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+
+            def Xform "torso_left_arm_mount_link"
+            {
+                quatd xformOp:orient = (0.0000028971458050364163, 0.0000022230649392440682, -0.6087626218795776, -0.7933524250984192)
+                double3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (0.09849999845027924, 0.28025001287460327, 0.16659000515937805)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                def Xform "left_arm_base_link"
+                {
+                    quatd xformOp:orient = (1, 0, 0, 0)
+                    double3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (0, 0, 0)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+            }
+
+            def Xform "torso_right_arm_mount_link"
+            {
+                quatd xformOp:orient = (0.0000028971458050364163, -0.0000022230649392440682, 0.6087626218795776, -0.7933524250984192)
+                double3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (0.09849999845027924, -0.28025001287460327, 0.16659000515937805)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                def Xform "right_arm_base_link"
+                {
+                    quatd xformOp:orient = (1, 0, 0, 0)
+                    double3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (0, 0, 0)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+            }
+        }
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "torso_base_link" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_4>
+            )
+            {
+                token visibility = "inherited"
+            }
+
+            def Xform "left_arm_base_link" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_5>
+            )
+            {
+                token visibility = "inherited"
+                quatd xformOp:orient = (0.000002897145805, 0.000002223064939, -0.6087626218, -0.793352425)
+                double3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (0.09849999845, 0.2802500129, 0.1665900052)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+
+            def Xform "right_arm_base_link" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_5>
+            )
+            {
+                token visibility = "inherited"
+                quatd xformOp:orient = (0.000002897145805, -0.000002223064939, 0.6087626218, -0.793352425)
+                double3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (0.09849999845, -0.2802500129, 0.1665900052)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "torso_base_link" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_6>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+
+            def Xform "left_arm_base_link" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_7>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+                quatd xformOp:orient = (0.000002897145805, 0.000002223064939, -0.6087626218, -0.793352425)
+                double3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (0.09849999845, 0.2802500129, 0.1665900052)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+
+            def Xform "right_arm_base_link" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_7>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+                quatd xformOp:orient = (0.000002897145805, -0.000002223064939, 0.6087626218, -0.793352425)
+                double3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (0.09849999845, -0.2802500129, 0.1665900052)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+        }
+    }
+
+    def Scope "joints"
+    {
+    }
+
+    def Xform "head_link1"
+    {
+        quatd xformOp:orient = (1, 0, 0, 0)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0.042999934405088425, 8.381903171539307e-9, 0.847210168838501)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "head_link1" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_8>
+            )
+            {
+                token visibility = "inherited"
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "head_link1" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_9>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+        }
+    }
+
+    def Xform "head_link2"
+    {
+        quatd xformOp:orient = (0.7071056011929554, 0.7071079611781647, 5.960464477541919e-8, 6.891787052157844e-8)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (-0.009000062942504883, 8.847564458847046e-9, 0.847210168838501)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "head_end_effector_mount_link"
+        {
+            quatd xformOp:orient = (0.7071055173873901, -0.7071080803871155, 0, 0)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "head_link2" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_10>
+            )
+            {
+                token visibility = "inherited"
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "head_link2" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_11>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+        }
+    }
+
+    def Xform "left_arm_link1"
+    {
+        quatd xformOp:orient = (-0.2053380868864803, 0.15755755749391281, 0.5880200694951877, 0.7663186569706023)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0.026999974623322487, 0.28025001287460327, 0.7210001349449158)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "left_arm_link1" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_12>
+            )
+            {
+                token visibility = "inherited"
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "left_arm_link1" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_13>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+        }
+    }
+
+    def Xform "left_arm_link2"
+    {
+        quatd xformOp:orient = (0.9576628267486842, 0.12607795872754246, 0.25660248334221336, 0.03378496898659404)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0.02699997089803219, 0.2802499830722809, 0.7210001349449158)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "left_arm_link2" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_14>
+            )
+            {
+                token visibility = "inherited"
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "left_arm_link2" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_15>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+        }
+    }
+
+    def Xform "left_arm_link3"
+    {
+        quatd xformOp:orient = (0.2053377320063087, -0.1575606313860391, 0.5880207410186078, 0.7663176047721113)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0.02699735388159752, 0.7535536289215088, 0.8478214144706726)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "left_arm_link3" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_16>
+            )
+            {
+                token visibility = "inherited"
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "left_arm_link3" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_17>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+        }
+    }
+
+    def Xform "left_arm_link4"
+    {
+        quatd xformOp:orient = (0.03378303926300197, -0.25660795491002497, -0.12607674554992399, 0.9576615884364313)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0.02699735388159752, 0.7535536289215088, 0.8478214144706726)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "left_arm_link4" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_18>
+            )
+            {
+                token visibility = "inherited"
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "left_arm_link4" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_19>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+        }
+    }
+
+    def Xform "left_arm_link5"
+    {
+        quatd xformOp:orient = (0.7663170419489059, -0.5880213996135293, -0.15756362730825016, -0.2053356475741411)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0.026963939890265465, 1.1695632934570312, 0.9593498706817627)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "left_arm_link5" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_20>
+            )
+            {
+                token visibility = "inherited"
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "left_arm_link5" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_21>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+        }
+    }
+
+    def Xform "left_arm_link6"
+    {
+        quatd xformOp:orient = (0.09230333284397071, 0.7010541151308367, 0.6532837409915666, 0.2705985516592403)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0.026963943615555763, 1.1695632934570312, 0.9593498110771179)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "left_arm_link6" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_22>
+            )
+            {
+                token visibility = "inherited"
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "left_arm_link6" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_23>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+        }
+    }
+
+    def Xform "left_arm_link7"
+    {
+        quatd xformOp:orient = (0.27059843473289347, 0.6532813477962753, -0.5609886789969348, -0.4304551890485976)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0.02696393057703972, 1.1695632934570312, 0.9593498706817627)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "left_arm_camera_link"
+        {
+            quatd xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Xform "left_arm_end_effector_mount_link"
+        {
+            quatd xformOp:orient = (1.3335471615860683e-11, -0.0000036517765238386346, -1, 0.0000036517765238386346)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (-0.14000000059604645, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+            def Xform "left_adapter_flange_link"
+            {
+                quatd xformOp:orient = (1, 0, 0, 0)
+                double3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (0, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                def Xform "left_gripper_base_link"
+                {
+                    quatd xformOp:orient = (1, 0, 0, 0)
+                    double3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (0.019999999552965164, 0, -0.03500000014901161)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                    def Xform "left_fixed_contact_link"
+                    {
+                        quatd xformOp:orient = (0.49999821186065674, 0.5, 0.5, -0.500001847743988)
+                        double3 xformOp:scale = (1, 1, 1)
+                        double3 xformOp:translate = (0.08995000272989273, -0.031849998980760574, -0.09790000319480896)
+                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                    }
+                }
+            }
+        }
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "left_arm_link7" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_24>
+            )
+            {
+                token visibility = "inherited"
+            }
+
+            def Xform "left_arm_camera_link" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_25>
+            )
+            {
+                token visibility = "inherited"
+            }
+
+            def Xform "left_adapter_flange_link" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_26>
+            )
+            {
+                token visibility = "inherited"
+                quatd xformOp:orient = (0, 0.000003651776524, 1, -0.000003651776524)
+                double3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (-0.1400000006, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+
+            def Xform "left_gripper_base_link" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_27>
+            )
+            {
+                token visibility = "inherited"
+                quatd xformOp:orient = (0, 0.000003651776524, 1, -0.000003651776524)
+                double3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (-0.1599999964, 4.016954449e-7, 0.03500000015)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "left_arm_link7" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_28>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+
+            def Xform "left_arm_camera_link" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_29>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+
+            def Xform "left_adapter_flange_link" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_30>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+                quatd xformOp:orient = (0, 0.000003651776524, 1, -0.000003651776524)
+                double3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (-0.1400000006, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+
+            def Xform "left_gripper_base_link" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_31>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+                quatd xformOp:orient = (0, 0.000003651776524, 1, -0.000003651776524)
+                double3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (-0.1599999964, 4.016954449e-7, 0.03500000015)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+        }
+    }
+
+    def Xform "left_active_link1" (
+        instanceable = false
+    )
+    {
+        quatd xformOp:orient = (0.8935283102385083, 0.014793492659327058, -0.28552266580337865, 0.3462154223742591)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (-0.025863971561193466, 1.4036771059036255, 0.9905033111572266)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "left_active_link1" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_32>
+            )
+            {
+                token visibility = "inherited"
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "left_active_link1" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_33>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+        }
+    }
+
+    def Xform "left_active_link2"
+    {
+        quatd xformOp:orient = (0.032671245768290044, -0.2567519619215119, -0.12577960255985202, 0.9577006376364632)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0.006935523822903633, 1.437192440032959, 1.0190885066986084)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "left_active_contact_link"
+        {
+            quatd xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (0.027000000700354576, 0.009999999776482582, -0.03927500173449516)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "left_active_link2" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_34>
+            )
+            {
+                token visibility = "inherited"
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "left_active_link2" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_35>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+        }
+    }
+
+    def Xform "left_passive_link"
+    {
+        quatd xformOp:orient = (0.8939765448256008, 0.015163813962048963, -0.285503344715244, 0.3450562797634807)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (-0.037122294306755066, 1.4053593873977661, 0.9842247366905212)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "left_passive_link" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_36>
+            )
+            {
+                token visibility = "inherited"
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "left_passive_link" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_37>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+        }
+    }
+
+    def Xform "right_arm_link1"
+    {
+        quatd xformOp:orient = (0.20533242153250197, 0.15756191870381794, -0.5880187957777195, 0.7663202556725816)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0.027000002562999725, -0.28025001287460327, 0.7210001349449158)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "right_arm_link1" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_12>
+            )
+            {
+                token visibility = "inherited"
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "right_arm_link1" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_13>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+        }
+    }
+
+    def Xform "right_arm_link2"
+    {
+        quatd xformOp:orient = (0.9576611495311768, -0.12607974397742927, 0.256608676870109, -0.03377880684960567)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0.027000000700354576, -0.28025001287460327, 0.7210001349449158)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "right_arm_link2" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_38>
+            )
+            {
+                token visibility = "inherited"
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "right_arm_link2" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_39>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+        }
+    }
+
+    def Xform "right_arm_link3"
+    {
+        quatd xformOp:orient = (-0.20533474644735883, -0.1575559392896399, -0.5880188958865283, 0.7663207852957837)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0.027004433795809746, -0.7535536885261536, 0.8478214144706726)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "right_arm_link3" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_40>
+            )
+            {
+                token visibility = "inherited"
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "right_arm_link3" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_17>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+        }
+    }
+
+    def Xform "right_arm_link4"
+    {
+        quatd xformOp:orient = (-0.03378420832871135, -0.2566025009278397, 0.12608023260248746, 0.9576625495090028)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0.027004431933164597, -0.7535536885261536, 0.8478214144706726)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "right_arm_link4" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_41>
+            )
+            {
+                token visibility = "inherited"
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "right_arm_link4" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_42>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+        }
+    }
+
+    def Xform "right_arm_link5"
+    {
+        quatd xformOp:orient = (-0.20533477258603794, -0.15755593840678567, -0.5880188925916037, 0.766320781001756)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0.026961224153637886, -1.1695575714111328, 0.9593706130981445)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "right_arm_link5" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_43>
+            )
+            {
+                token visibility = "inherited"
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "right_arm_link5" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_44>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+        }
+    }
+
+    def Xform "right_arm_link6"
+    {
+        quatd xformOp:orient = (-0.09229265326774916, 0.7010606161172919, -0.6532796239498778, 0.27059529118953307)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0.026961181312799454, -1.1695575714111328, 0.9593706727027893)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "right_arm_link6" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_45>
+            )
+            {
+                token visibility = "inherited"
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "right_arm_link6" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_46>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+        }
+    }
+
+    def Xform "right_arm_link7"
+    {
+        quatd xformOp:orient = (-0.27060193737269256, 0.6532793326245261, 0.5609836819842186, -0.43046255772509256)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0.02696119248867035, -1.1695575714111328, 0.9593706727027893)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "right_arm_camera_link"
+        {
+            quatd xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Xform "right_arm_end_effector_mount_link"
+        {
+            quatd xformOp:orient = (1.3335471615860683e-11, 0.0000036517765238386346, -1, -0.0000036517765238386346)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (-0.14000000059604645, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+            def Xform "right_adapter_flange_link"
+            {
+                quatd xformOp:orient = (1, 0, 0, 0)
+                double3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (0, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                def Xform "right_gripper_base_link"
+                {
+                    quatd xformOp:orient = (1, 0, 0, 0)
+                    double3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (0.019999999552965164, 0, -0.03500000014901161)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                    def Xform "right_fixed_contact_link"
+                    {
+                        quatd xformOp:orient = (0.4999999701976776, 0.4999999701976776, 0.4999999701976776, -0.4999999701976776)
+                        double3 xformOp:scale = (1, 1, 1)
+                        double3 xformOp:translate = (0.08995000272989273, 0.03435000032186508, -0.09790000319480896)
+                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                    }
+                }
+            }
+        }
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "right_arm_link7" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_24>
+            )
+            {
+                token visibility = "inherited"
+            }
+
+            def Xform "right_arm_camera_link" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_47>
+            )
+            {
+                token visibility = "inherited"
+            }
+
+            def Xform "right_adapter_flange_link" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_48>
+            )
+            {
+                token visibility = "inherited"
+                quatd xformOp:orient = (0, 0.000003651776524, -1, -0.000003651776524)
+                double3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (-0.1400000006, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+
+            def Xform "right_gripper_base_link" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_49>
+            )
+            {
+                token visibility = "inherited"
+                quatd xformOp:orient = (0, 0.000003651776524, -1, -0.000003651776524)
+                double3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (-0.1599999964, -4.016954449e-7, 0.03500000015)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "right_arm_link7" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_28>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+
+            def Xform "right_arm_camera_link" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_50>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+
+            def Xform "right_adapter_flange_link" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_30>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+                quatd xformOp:orient = (0, 0.000003651776524, -1, -0.000003651776524)
+                double3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (-0.1400000006, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+
+            def Xform "right_gripper_base_link" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_51>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+                quatd xformOp:orient = (0, 0.000003651776524, -1, -0.000003651776524)
+                double3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (-0.1599999964, -4.016954449e-7, 0.03500000015)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+        }
+    }
+
+    def Xform "right_active_link1"
+    {
+        quatd xformOp:orient = (0.014803427961415807, 0.8935301629950574, -0.34621684026591737, 0.28551463334635174)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (-0.02586694061756134, -1.403671145439148, 0.9905266761779785)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            token visibility = "inherited"
+
+            def Xform "right_active_link1" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_52>
+            )
+            {
+                token visibility = "inherited"
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "right_active_link1" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_53>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+        }
+    }
+
+    def Xform "right_active_link2"
+    {
+        quatd xformOp:orient = (0.2565974118167405, -0.03375956091814095, 0.9576651590738945, -0.12607737065602576)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0.006932961288839579, -1.4371864795684814, 1.0191115140914917)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "right_active_contact_link"
+        {
+            quatd xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (0.027000000700354576, 0.009999999776482582, 0.03927500173449516)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "right_active_link2" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_54>
+            )
+            {
+                token visibility = "inherited"
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "right_active_link2" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_55>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+        }
+    }
+
+    def Xform "right_passive_link"
+    {
+        quatd xformOp:orient = (0.014803268223064157, 0.8935300749590183, -0.3462170080635178, 0.28551471366847875)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (-0.03712538629770279, -1.405353307723999, 0.9842483997344971)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "right_passive_link" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_56>
+            )
+            {
+                token visibility = "inherited"
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "right_passive_link" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_37>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+        }
+    }
+
+    def Xform "wheel_steering_link1"
+    {
+        quatd xformOp:orient = (0.9999451692969491, -1.2709052275368565e-9, 1.6247214230051626e-8, -0.0104717906632791)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0.24700000882148743, -0.24700002372264862, 0.05350007116794586)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "wheel_steering_link1" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_57>
+            )
+            {
+                token visibility = "inherited"
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "wheel_steering_link1" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_58>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+        }
+    }
+
+    def Xform "wheel_driving_link1"
+    {
+        quatd xformOp:orient = (0.7065359331617408, -0.7057890892010765, 0.04316785559047153, 0.028377331793235712)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0.24699999392032623, -0.24700002372264862, 0.05350007116794586)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "wheel_driving_link1" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_59>
+            )
+            {
+                token visibility = "inherited"
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "wheel_driving_link1" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_60>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+        }
+    }
+
+    def Xform "wheel_steering_link2"
+    {
+        quatd xformOp:orient = (0.9994208999304923, -1.707621948321041e-8, -2.295564857160822e-8, -0.03402741221609469)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0.2470000684261322, 0.24700000882148743, 0.05349999666213989)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "wheel_steering_link2" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_61>
+            )
+            {
+                token visibility = "inherited"
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "wheel_steering_link2" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_62>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+        }
+    }
+
+    def Xform "wheel_driving_link2"
+    {
+        quatd xformOp:orient = (-0.7066961168267464, 0.7066984773511701, -0.024060983213626312, 0.024060957136594226)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0.2470000684261322, 0.24699999392032623, 0.05350000411272049)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "wheel_driving_link2" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_63>
+            )
+            {
+                token visibility = "inherited"
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "wheel_driving_link2" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_60>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+        }
+    }
+
+    def Xform "wheel_steering_link3"
+    {
+        quatd xformOp:orient = (0.9513258705670763, 1.2292002994250874e-7, 1.0288204234563019e-8, 0.3081867745211971)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (-0.24699994921684265, -0.2469998449087143, 0.05350060760974884)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "wheel_steering_link3" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_57>
+            )
+            {
+                token visibility = "inherited"
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "wheel_steering_link3" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_58>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+        }
+    }
+
+    def Xform "wheel_driving_link3"
+    {
+        quatd xformOp:orient = (0.6760279183386744, -0.6691840325261712, -0.22846055147713412, 0.2073276649592494)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (-0.24699994921684265, -0.2469998449087143, 0.053500596433877945)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "wheel_driving_link3" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_59>
+            )
+            {
+                token visibility = "inherited"
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "wheel_driving_link3" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_60>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+        }
+    }
+
+    def Xform "wheel_steering_link4"
+    {
+        quatd xformOp:orient = (0.9888865245033291, -5.498623425620909e-8, -2.876186231959966e-8, -0.1486722625634074)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (-0.24699991941452026, 0.24699991941452026, 0.05350028723478317)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "wheel_steering_link4" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_61>
+            )
+            {
+                token visibility = "inherited"
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "wheel_steering_link4" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_62>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+        }
+    }
+
+    def Xform "wheel_driving_link4"
+    {
+        quatd xformOp:orient = (0.7000512679183017, -0.6984023459597086, 0.1106159017724108, -0.09963186096339927)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (-0.24699991941452026, 0.24699991941452026, 0.05350029096007347)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Xform "visuals" (
+            instanceable = false
+        )
+        {
+            def Xform "wheel_driving_link4" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_63>
+            )
+            {
+                token visibility = "inherited"
+            }
+        }
+
+        def Xform "collisions" (
+            instanceable = false
+        )
+        {
+            def Xform "wheel_driving_link4" (
+                instanceable = true
+                prepend references = @./instances.usda@</Instances/mesh_60>
+            )
+            {
+                uniform token purpose = "guide"
+                token visibility = "inherited"
+            }
+        }
+    }
+
+    def Scope "Looks"
+    {
+    }
+
+    def Scope "VisualMaterials"
+    {
+        def Material "M_gripper_physics"
+        {
+            token outputs:displacement (
+                displayGroup = "Outputs"
+            )
+            token outputs:surface (
+                displayGroup = "Outputs"
+            )
+            token outputs:volume (
+                displayGroup = "Outputs"
+            )
+        }
+    }
+}
+

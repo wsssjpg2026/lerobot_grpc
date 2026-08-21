@@ -368,7 +368,9 @@ class MuJoCoSO101Servicer(FollowerServicer):
             self._latest_action = action
 
         # Echo commanded action back (A-class semantics, same as MockFollowerServicer).
-        return device_pb2.Action(features=list(encode_feature(self._act_ft_info, action)))
+        return device_pb2.ActionResult(
+            features=list(encode_feature(self._act_ft_info, action))
+        )
 
     def GetFeedback(self, request, context):
         with self._lock:

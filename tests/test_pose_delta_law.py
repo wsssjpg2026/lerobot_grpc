@@ -194,20 +194,44 @@ class TestFkConsistency:
 
 
 class TestJumpReset:
-    def test_solution_jump_resets_warm_start(self):
-        """Official 30 deg rule: a solution >30 deg per joint from the
-        previous one resets the warm start (next solve re-seeds from the
-        measured arm pose)."""
-        law = _law()
+    def test_solution_jump_is_rejected_and_holds_the_committed_command(
+        self, monkeypatch
+    ):
+        """A >30 degree IK branch change is not a motion command.
+
+        A frame cap limits velocity but does not make a discontinuous IK
+        branch safe.  The law must keep the last committed command and report
+        the rejected jump so the session layer can request re-alignment.
+        """
+        law = _law(reject_branch_jumps=True)
         qpos = _home_qpos()
         law.lock_reference(qpos)
         law.solve(_delta(0.02), qpos)
         assert law._warm_seed is not None
-        # A reachable-but-large retarget: >30 deg of joint motion.
+        committed = law._last_sent.copy()
+
+        # Make every deterministic seed converge accurately onto the same
+        # discontinuous branch.  This isolates branch acceptance from DLS
+        # convergence details while still exercising the law's public solve
+        # seam, collision gate, state commit, and hold result.
+        def discontinuous_solve(target_pos, target_rot, _seed):
+            raw = law._last_solved.copy()
+            raw[0] += math.radians(45.0)
+            return type("AccurateJump", (), {
+                "qpos": raw,
+                "pos_err": 0.0,
+                "rot_err": 0.0,
+                "manipulability": 1.0,
+                "achieved_pos": np.asarray(target_pos),
+                "achieved_rot": np.asarray(target_rot),
+            })()
+
+        monkeypatch.setattr(law._ik_solver, "solve", discontinuous_solve)
         jumped = law.solve(_delta(dz=-0.15, dy=0.10), qpos)
-        if not jumped.jumped:
-            pytest.skip("retarget stayed under 30 deg on this model")
-        assert law._warm_seed is None  # reset: next solve seeds from qpos
+        assert jumped.held and jumped.rejected and jumped.jumped
+        assert jumped.reason == "ik-branch-jump"
+        np.testing.assert_allclose(law._last_sent, committed)
+        assert law._warm_seed is None
 
 
 class TestFrameCap:
@@ -244,13 +268,141 @@ class TestStaleHold:
         law = _law()
         qpos = _home_qpos()
         law.lock_reference(qpos)
-        fresh = law.solve(_delta(0.04, grip=10.0), qpos).joint_action
-        # leader stream goes stale -> the arm freezes at the last command
+        law.solve(_delta(0.04, grip=10.0), qpos)
+        # leader stream goes stale -> re-anchor the hold at measured qpos so a
+        # delayed controller target cannot resume after the gap.
         held = law.solve(_delta(0.20, grip=50.0), qpos, stale=True)
         assert held.held and held.stale
-        # body joints are the frozen last solve; only the gripper could move
-        for j in BODY:
-            assert held.joint_action[f"{j}.pos"] == fresh[f"{j}.pos"]
+        for index, joint in enumerate(BODY):
+            assert held.joint_action[f"{joint}.pos"] == pytest.approx(
+                np.degrees(qpos[index])
+            )
+
+
+class TestCollisionHysteresis:
+    def test_collision_status_releases_only_after_the_outer_margin(
+        self, monkeypatch
+    ):
+        """A 10 mm entry gate must not chatter READY before 15 mm release."""
+
+        class Checker:
+            supports_hysteresis = True
+
+            @staticmethod
+            def check(qpos, *, release=False):
+                clearance = float(qpos[0])
+                threshold = 0.015 if release else 0.010
+                return type(
+                    "Collision",
+                    (),
+                    {
+                        "collided": clearance <= threshold,
+                        "body_a": "left_gripper_base_link",
+                        "body_b": "right_gripper_base_link",
+                        "distance_m": clearance,
+                    },
+                )()
+
+        law = _law(collision_checker=Checker())
+        qpos = _home_qpos()
+        qpos[0] = 0.020
+        law.lock_reference(qpos)
+        next_clearance = 0.009
+
+        def scripted_solve(target_pos, target_rot, _seed):
+            raw = qpos[:5].copy()
+            raw[0] = next_clearance
+            return type(
+                "Candidate",
+                (),
+                {
+                    "qpos": raw,
+                    "pos_err": 0.0,
+                    "rot_err": 0.0,
+                    "manipulability": 1.0,
+                    "achieved_pos": np.asarray(target_pos),
+                    "achieved_rot": np.asarray(target_rot),
+                },
+            )()
+
+        monkeypatch.setattr(law._ik_solver, "solve", scripted_solve)
+
+        entered = law.solve(_delta(), qpos)
+        assert entered.collided
+
+        # The measured arm has escaped beyond 10 mm, but remains inside the
+        # 15 mm release margin.  An outward command is allowed while the
+        # safety receipt remains collision-limited.
+        qpos[0] = 0.012
+        next_clearance = 0.013
+        escaping = law.solve(_delta(), qpos)
+        assert not escaping.held
+        assert escaping.collided
+        assert escaping.reason == "collision-hysteresis"
+
+        qpos[0] = 0.016
+        next_clearance = 0.017
+        released = law.solve(_delta(), qpos)
+        assert not released.held
+        assert not released.collided
+
+    def test_gripper_precheck_does_not_block_arm_escape(self, monkeypatch):
+        """An unchanged arm-body pair must reach IK so the arm can move away."""
+
+        class Checker:
+            supports_hysteresis = True
+
+            @staticmethod
+            def check(qpos, *, release=False):
+                clearance = float(qpos[0])
+                threshold = 0.015 if release else 0.010
+                return type(
+                    "Collision",
+                    (),
+                    {
+                        "collided": clearance <= threshold,
+                        "body_a": "left_arm_link2",
+                        "body_b": "torso_base_link",
+                        "distance_m": clearance,
+                    },
+                )()
+
+        def gripper_candidate(state, gripper_open):
+            candidate = np.asarray(state, dtype=float).copy()
+            candidate[-1] = float(gripper_open) / 100.0
+            return candidate
+
+        law = _law(
+            collision_checker=Checker(),
+            candidate_qpos_adapter=gripper_candidate,
+        )
+        qpos = _home_qpos()
+        qpos[0] = 0.012
+        law.lock_reference(qpos)
+        law._collision_latched = True
+
+        def escaping_solve(target_pos, target_rot, _seed):
+            raw = qpos[:5].copy()
+            raw[0] = 0.013
+            return type(
+                "Candidate",
+                (),
+                {
+                    "qpos": raw,
+                    "pos_err": 0.0,
+                    "rot_err": 0.0,
+                    "manipulability": 1.0,
+                    "achieved_pos": np.asarray(target_pos),
+                    "achieved_rot": np.asarray(target_rot),
+                },
+            )()
+
+        monkeypatch.setattr(law._ik_solver, "solve", escaping_solve)
+
+        escaping = law.solve(_delta(grip=30.0), qpos)
+        assert not escaping.held
+        assert escaping.collided
+        assert escaping.reason == "collision-hysteresis"
 
 
 # ---------------------------------------------------------------------------

@@ -42,9 +42,10 @@ pytest.importorskip("mujoco")
 
 
 class _FakePose:
-    def __init__(self, position, quat):
+    def __init__(self, position, quat, timestamp):
         self.position = np.asarray(position, dtype=float)
         self.rotation = np.asarray(quat, dtype=float)
+        self.timestamp = float(timestamp)
 
 
 class _FakeSense:
@@ -54,9 +55,11 @@ class _FakeSense:
         self.pose_position = np.zeros(3)
         self.pose_quat = np.array([0.0, 0.0, 0.0, 1.0])
         self.gripper = 30.0
+        self.timestamp = 0.0
 
     def get_pose(self, device):
-        return _FakePose(self.pose_position, self.pose_quat)
+        self.timestamp += 0.01
+        return _FakePose(self.pose_position, self.pose_quat, self.timestamp)
 
     def get_gripper_distance(self):
         return self.gripper
@@ -68,6 +71,7 @@ def _make_leader(tmp_path, command_provider):
         R_lh2base=np.eye(3),
         calibration_dir=str(tmp_path),
         command_state_provider=command_provider,
+        tracker_health_enabled=False,
     )
     servicer._device = _FakeSense()
     servicer._tracker_device = "FAKE"

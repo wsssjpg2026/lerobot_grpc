@@ -833,7 +833,9 @@ class SO101FollowerServicer(FollowerServicer):
         finally:
             self._release_bus()
         # Echo the commanded action back (A-class semantics, same as the sim adapter).
-        return device_pb2.Action(features=list(encode_feature(self._act_ft_info, act_dict)))
+        return device_pb2.ActionResult(
+            features=list(encode_feature(self._act_ft_info, act_dict))
+        )
 
     def _solve_pose_delta(self, delta_action: dict[str, float]) -> dict[str, float]:
         """Runs the shared law on one raw leader delta, seeding FK/IK from the

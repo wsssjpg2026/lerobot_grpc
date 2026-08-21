@@ -1,0 +1,56 @@
+// UV-free camera / LiDAR dome coating.
+// Color is driven by the view-dependent Fresnel response, not by textures.
+mdl 1.8;
+
+import ::base::*;
+import ::df::*;
+import ::math::*;
+import ::state::*;
+
+export material fresnel_iridescent_lens(
+    uniform color normal_color = color(0.002, 0.006, 0.05),
+    uniform color grazing_color = color(0.02, 0.90, 0.75),
+    uniform color violet_grazing_color = color(0.90, 0.03, 1.0),
+    uniform float fresnel_exponent = 1.8,
+    uniform float roughness = 0.012,
+    uniform float film_thickness = 400.0,
+    uniform float film_ior = 1.85
+)
+= let {
+    float roughness2 = roughness * roughness;
+
+    bsdf glossy = df::microfacet_ggx_vcavities_bsdf(
+        tint: color(1.0),
+        roughness_u: roughness2,
+        roughness_v: roughness2);
+
+    bsdf fresnel_colored = df::directional_factor(
+        normal_tint: normal_color,
+        grazing_tint: grazing_color,
+        exponent: fresnel_exponent,
+        base: glossy);
+
+    bsdf coated = df::thin_film(
+        thickness: film_thickness,
+        ior: color(film_ior),
+        base: fresnel_colored);
+
+    bsdf rainbow_coated = df::color_custom_curve_layer(
+        weight: color(1.0),
+        normal_reflectivity: color(0.005, 0.001, 0.012),
+        grazing_reflectivity: violet_grazing_color,
+        layer: df::microfacet_ggx_vcavities_bsdf(
+            tint: color(1.0),
+            roughness_u: roughness2,
+            roughness_v: roughness2),
+        base: coated,
+        normal: state::normal());
+}
+in material(
+    surface: material_surface(
+        scattering: rainbow_coated
+    ),
+    geometry: material_geometry(
+        cutout_opacity: 1.0
+    )
+);

@@ -31,6 +31,11 @@ else:
 
 logger = logging.getLogger(__name__)
 
+
+class ReferenceNotReadyError(DeviceNotConnectedError):
+    """The leader is connected, but cannot safely capture a reference yet."""
+
+
 # The server rejects GetAction while the bus is busy (real calibration, or a just-released
 # stuck bus call). Retry briefly instead of crashing the teleop loop on a transient busy.
 _BUSY_RETRIES = 5
@@ -57,6 +62,7 @@ class GRPCLeader(Teleoperator):
         self.warmup_timeout_s = config.warmup_timeout_s
         self.connect_timeout_s = config.connect_timeout_s
         self.data_timeout_s = config.data_timeout_s
+        self.reference_timeout_s = config.reference_timeout_s
 
         self._obs_ft_info: dict[str, device_pb2.OneFeatureInfo] = {}
         self._act_ft_info: dict[str, device_pb2.OneFeatureInfo] = {}
@@ -65,6 +71,10 @@ class GRPCLeader(Teleoperator):
         self._latest_obs_ft: RobotObservation = {}
         self._latest_act_ft: RobotAction = {}
         self._latest_fb_ft: dict[str, Any] = {}
+        self._last_action_quality = device_pb2.FrameQuality.FRAME_QUALITY_GOOD
+        self._last_tracking_state = (
+            device_pb2.TrackingState.TRACKING_STATE_UNSPECIFIED
+        )
 
         self.stub: device_pb2_grpc.TeleoperatorStub | None = None
         self.channel: grpc.Channel | None = None
@@ -125,6 +135,20 @@ class GRPCLeader(Teleoperator):
     def is_calibrated(self) -> bool:
         return self._is_calibrated
 
+    @property
+    def last_action_quality(self) -> int:
+        """Worst per-feature quality from the latest action snapshot."""
+        return int(self._last_action_quality)
+
+    @property
+    def last_tracking_state(self) -> int:
+        """Teleoperator lifecycle state from the latest action snapshot.
+
+        Older servers do not populate this additive field; in that case the
+        client derives a conservative state from ``FrameQuality``.
+        """
+        return int(self._last_tracking_state)
+
     @staticmethod
     def _verify_features(feature: RobotObservation | RobotAction, feature_dict: dict[str, type | tuple]) -> bool:
         """Verifies that the provided feature dictionary matches the expected features."""
@@ -179,6 +203,7 @@ class GRPCLeader(Teleoperator):
         self._latest_obs_ft.clear()
         self._latest_act_ft.clear()
         self._latest_fb_ft.clear()
+        self._last_action_quality = device_pb2.FrameQuality.FRAME_QUALITY_GOOD
 
     @check_if_already_connected
     def connect(self, calibrate: bool = True) -> None:
@@ -374,10 +399,30 @@ class GRPCLeader(Teleoperator):
         while attempts > 0:
             attempts -= 1
             received_keys: set[str] = set()
+            qualities: list[int] = []
+            tracking_states: list[int] = []
             try:
                 for act in self.stub.GetAction(Empty(), timeout=self.data_timeout_s):
                     load_feature(act, self._act_ft_info, self._latest_act_ft)
                     received_keys.add(act.key)
+                    quality = int(act.quality)
+                    qualities.append(
+                        quality
+                        if quality != device_pb2.FrameQuality.FRAME_QUALITY_UNSPECIFIED
+                        else device_pb2.FrameQuality.FRAME_QUALITY_GOOD
+                    )
+                    tracking_state = int(
+                        getattr(
+                            act,
+                            "tracking_state",
+                            device_pb2.TrackingState.TRACKING_STATE_UNSPECIFIED,
+                        )
+                    )
+                    if (
+                        tracking_state
+                        != device_pb2.TrackingState.TRACKING_STATE_UNSPECIFIED
+                    ):
+                        tracking_states.append(tracking_state)
                 last_error = None
                 break
             except grpc.RpcError as e:
@@ -404,6 +449,38 @@ class GRPCLeader(Teleoperator):
         if missing_critical:
             raise DeviceNotConnectedError(
                 f"Missing critical feature(s) {sorted(missing_critical)} in the received action."
+            )
+
+        self._last_action_quality = max(
+            qualities,
+            default=device_pb2.FrameQuality.FRAME_QUALITY_GOOD,
+        )
+        unique_tracking_states = set(tracking_states)
+        if len(unique_tracking_states) == 1:
+            self._last_tracking_state = unique_tracking_states.pop()
+        elif len(unique_tracking_states) > 1:
+            # A snapshot carrying conflicting lifecycle states is not safe to
+            # interpret as ready.  Quality still independently gates motion.
+            self._last_tracking_state = (
+                device_pb2.TrackingState.TRACKING_STATE_UNSPECIFIED
+            )
+        elif (
+            self._last_action_quality
+            == device_pb2.FrameQuality.FRAME_QUALITY_GOOD
+        ):
+            self._last_tracking_state = (
+                device_pb2.TrackingState.TRACKING_STATE_READY
+            )
+        elif (
+            self._last_action_quality
+            == device_pb2.FrameQuality.FRAME_QUALITY_STALE
+        ):
+            self._last_tracking_state = (
+                device_pb2.TrackingState.TRACKING_STATE_LOST
+            )
+        else:
+            self._last_tracking_state = (
+                device_pb2.TrackingState.TRACKING_STATE_HELD
             )
 
         return self._latest_act_ft.copy()
@@ -441,8 +518,15 @@ class GRPCLeader(Teleoperator):
     def set_reference(self) -> None:
         """Sets the reference for the remote robot. On receiving this command, the remote robot will set its current state as the reference state."""
         try:
-            self.stub.SetReference(Empty(), timeout=self.data_timeout_s)
+            self.stub.SetReference(Empty(), timeout=self.reference_timeout_s)
         except grpc.RpcError as e:
+            if e.code() in (
+                grpc.StatusCode.FAILED_PRECONDITION,
+                grpc.StatusCode.DEADLINE_EXCEEDED,
+            ):
+                raise ReferenceNotReadyError(
+                    f"Reference is not ready on GRPCLeader at {self.address}: {e}"
+                ) from e
             raise DeviceNotConnectedError(
                 f"Failed to set reference on GRPCLeader at {self.address}: {e}"
             ) from e

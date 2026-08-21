@@ -59,6 +59,22 @@ enum FrameQuality {
     FRAME_QUALITY_STALE = 3;
 }
 
+// Teleoperator runtime tracking lifecycle.  FrameQuality remains the generic
+// data-validity gate; this state tells an owned orchestration client what the
+// operator must do next instead of forcing it to infer Pika internals.
+enum TrackingState {
+    TRACKING_STATE_UNSPECIFIED = 0;
+    TRACKING_STATE_READY = 1;
+    TRACKING_STATE_HELD = 2;
+    TRACKING_STATE_LOST = 3;
+    TRACKING_STATE_RECOVERING = 4;
+    TRACKING_STATE_CONFIRM_REQUIRED = 5;
+    TRACKING_STATE_TRANSIENT_LOSS = 6;
+    // The operator confirmation was accepted.  Collection must keep the
+    // follower held while committing follower -> leader references.
+    TRACKING_STATE_REFERENCE_PENDING = 7;
+}
+
 enum CalibrationStatus {
     CALIBRATION_STATUS_UNSPECIFIED = 0;
     CALIBRATED = 1;
@@ -104,6 +120,10 @@ message OneFeature {
     // 不重发 shape/dtype/encoding——热路径省带宽(rdc.v1 NamedTensor-per-frame 的教训)。
     google.protobuf.Timestamp produce_ts = 3;
     FrameQuality quality = 4;
+    // Repeated on each feature of a teleoperator snapshot so the existing
+    // streaming RPC stays self-contained.  Non-tracking devices leave it
+    // UNSPECIFIED and old clients safely ignore this additive field.
+    TrackingState tracking_state = 5;
 }
 
 message CalibrationInfo {
@@ -139,6 +159,52 @@ message Action {
     repeated OneFeature features = 1;
 }
 
+// Result of applying one commanded action.  ``features`` uses the separately
+// negotiated effective-action schema and therefore may differ from the
+// request schema (for example pose-delta input -> joint targets after IK).
+// Field 1 intentionally matches ``Action.features`` so older clients can
+// still decode the effective features and safely ignore the diagnostics.
+message ActionResult {
+    repeated OneFeature features = 1;
+    SafetyReport safety = 2;
+}
+
+message SafetyReport {
+    // Versioned bit fields interpreted by the owned clients.  They stay
+    // compact on the hot path and in the LeRobot dataset ``safety`` vector.
+    uint32 flags = 1;
+    uint32 applied_mask = 2;
+    string reason = 3;
+    string collision_pair_a = 4;
+    string collision_pair_b = 5;
+    float min_distance_m = 6;
+    float pos_err_m = 7;
+    float rot_err_rad = 8;
+    float manipulability = 9;
+    uint32 reject_streak = 10;
+    float reject_duration_s = 11;
+}
+
+// Session-level motion gate.  Hold is latched in the follower and therefore
+// remains effective even if an old pose-delta frame is replayed or a caller
+// accidentally continues SendAction.  Resume is accepted only after a newer
+// follower reference has been captured.
+message HoldRequest {
+    string reason = 1;
+}
+
+message HoldResponse {
+    bool held = 1;
+    uint64 hold_epoch = 2;
+}
+
+message ResumeRequest {}
+
+message ResumeResponse {
+    bool resumed = 1;
+    uint64 hold_epoch = 2;
+}
+
 // GetInfo:一次往返拿全 schema(替代原先三个 Get*FeatureInfo 流式 RPC)。
 // 连接时调用一次;之后每帧的 OneFeature 不再重发 shape/dtype/encoding。
 message GetInfoRequest {}
@@ -147,6 +213,9 @@ message GetInfoResponse {
     repeated OneFeatureInfo observation_features = 1;
     repeated OneFeatureInfo action_features = 2;
     repeated OneFeatureInfo feedback_features = 3;
+    // Schema of ActionResult.features.  Empty means the legacy invariant
+    // effective_action_features == action_features.
+    repeated OneFeatureInfo effective_action_features = 4;
 }
 
 service Robot {
@@ -161,7 +230,7 @@ service Robot {
 
     rpc GetObservation(google.protobuf.Empty) returns (stream OneFeature);
     // unary:请求=commanded,响应=executed(不再是 fire-and-forget 的 stream→Empty)。
-    rpc SendAction(Action) returns (Action);
+    rpc SendAction(Action) returns (ActionResult);
     rpc GetFeedback(google.protobuf.Empty) returns (stream OneFeature);
 
     rpc GetStatus(google.protobuf.Empty) returns (DeviceInfo);
@@ -170,6 +239,11 @@ service Robot {
     // 离合器再接合时客户端先调本 RPC 再调 leader SetReference,保证"当前手=当前臂"。
     // 不支持 pose_delta 的 follower 返回 UNIMPLEMENTED。
     rpc SetReference(google.protobuf.Empty) returns (google.protobuf.Empty);
+
+    // Fail-closed session gate used by collection orchestration during
+    // tracker loss, manual clutch, alignment, and emergency handling.
+    rpc Hold(HoldRequest) returns (HoldResponse);
+    rpc Resume(ResumeRequest) returns (ResumeResponse);
 }
 
 service Teleoperator {

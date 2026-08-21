@@ -129,7 +129,9 @@ class MockFollowerServicer(FollowerServicer):
         with self._lock:
             self._last_action = action
         # 返回 executed(mock echo commanded,等价于 so101 A 类语义)。
-        return device_pb2.Action(features=list(encode_feature(self._act_ft_info, action)))
+        return device_pb2.ActionResult(
+            features=list(encode_feature(self._act_ft_info, action))
+        )
 
     def GetFeedback(self, request, context):
         with self._lock:
