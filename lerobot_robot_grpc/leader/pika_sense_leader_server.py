@@ -236,6 +236,8 @@ class PikaSenseServicer(LeaderServicer):
     _MOTION_DIRECTION_COSINE = 0.25
     _MOTION_MIN_SPEED_RATIO = 0.15
     _MOTION_MAX_SPEED_RATIO = 6.0
+    _REFERENCE_FAULT_OPTICAL = "optical"
+    _REFERENCE_FAULT_POSE_DISCONTINUITY = "pose-discontinuity"
     # Rebuild a wedged Gen2 decoder only when raw Tracker photodiode hits have
     # returned but decoded sync/sweep output remains frozen.  Ordinary fast
     # motion and a physically hidden Tracker cannot enter this path.
@@ -366,6 +368,7 @@ class PikaSenseServicer(LeaderServicer):
         self._pending_tracker_samples: deque[TrackerSample] = deque()
         self._bad_tracker_samples = 0
         self._reference_required = False
+        self._reference_fault_kind: str | None = None
         self._tracker_recovery_samples: deque[TrackerSample] = deque()
         self._tracker_recovery_ready = False
         self._raw_optical_reacquiring = False
@@ -786,7 +789,8 @@ class PikaSenseServicer(LeaderServicer):
             if first_fresh_monotonic is None:
                 first_fresh_monotonic = now
                 logger.info(
-                    "TRACKER READY: first fresh pose; soaking solver for %.1fs.",
+                    "TRACKER READY: first fresh pose; starting %.1fs optical-"
+                    "health soak (this is not a global-fit convergence proof).",
                     self._tracker_min_soak_s,
                 )
 
@@ -807,7 +811,7 @@ class PikaSenseServicer(LeaderServicer):
                 last_progress = now
                 soak_elapsed = now - first_fresh_monotonic
                 logger.info(
-                    "TRACKER READY: phase=%s fresh_samples=%d soak=%.1f/%.1fs",
+                    "TRACKER READY: phase=%s fresh_samples=%d optical_soak=%.1f/%.1fs",
                     phase,
                     len(samples),
                     soak_elapsed,
@@ -830,7 +834,8 @@ class PikaSenseServicer(LeaderServicer):
                 if not self._auto_reference:
                     self._prime_runtime_tracker(sample)
                     logger.info(
-                        "TRACKER READY: optical tracking accepted; pose may move "
+                        "TRACKER READY: optical stream health accepted; global-fit "
+                        "error is unavailable from the Pika SDK, and pose may move "
                         "until collection alignment."
                     )
                     return sample
@@ -908,6 +913,7 @@ class PikaSenseServicer(LeaderServicer):
         self._pending_tracker_samples.clear()
         self._bad_tracker_samples = 0
         self._reference_required = False
+        self._reference_fault_kind = None
         self._reference_confirmation_pending = False
         self._tracker_recovery_samples.clear()
         self._tracker_recovery_ready = False
@@ -917,12 +923,32 @@ class PikaSenseServicer(LeaderServicer):
         self._last_decoder_restart_monotonic = None
         self._decoder_restart_discovery_deadline = None
 
-    def _require_new_reference(self, reason: str) -> None:
+    def _require_new_reference(
+        self,
+        reason: str,
+        *,
+        fault_kind: str = _REFERENCE_FAULT_OPTICAL,
+    ) -> None:
+        if fault_kind not in (
+            self._REFERENCE_FAULT_OPTICAL,
+            self._REFERENCE_FAULT_POSE_DISCONTINUITY,
+        ):
+            raise ValueError(f"unsupported reference fault kind: {fault_kind}")
         newly_required = not self._reference_required
+        # A real optical-health failure supersedes a pose-only quarantine.
+        # The reverse transition is impossible while reference_required is
+        # active because pose motion is no longer published or classified.
+        if newly_required or fault_kind == self._REFERENCE_FAULT_OPTICAL:
+            self._reference_fault_kind = fault_kind
         if newly_required:
             logger.error(
-                "TRACKER HEALTH: %s — holding output; stable recovery and "
+                "%s: %s — holding output; stable recovery and "
                 "a new Pika quick-squeeze confirmation are required.",
+                (
+                    "TRACKER OPTICAL"
+                    if fault_kind == self._REFERENCE_FAULT_OPTICAL
+                    else "TRACKER POSE"
+                ),
                 reason,
             )
         self._reference_required = True
@@ -1285,7 +1311,10 @@ class PikaSenseServicer(LeaderServicer):
                     sample.optical_measurement_count,
                     sample.optical_lighthouse_count,
                 )
-                self._require_new_reference("implausible absolute pose jump")
+                self._require_new_reference(
+                    "implausible absolute pose jump",
+                    fault_kind=self._REFERENCE_FAULT_POSE_DISCONTINUITY,
+                )
                 self._update_recovery_window(sample)
                 return None
 
@@ -1335,7 +1364,8 @@ class PikaSenseServicer(LeaderServicer):
             )
             if self._bad_tracker_samples >= self._MOTION_CONFIRM_SAMPLES:
                 self._require_new_reference(
-                    "pose trajectory remained discontinuous for three samples"
+                    "pose trajectory remained discontinuous for three samples",
+                    fault_kind=self._REFERENCE_FAULT_POSE_DISCONTINUITY,
                 )
                 self._update_recovery_window(sample)
                 return None
@@ -1631,6 +1661,7 @@ class PikaSenseServicer(LeaderServicer):
                             # coordinator, so cumulative-clutch mode performs
                             # its local jump-free relatch as before.
                             self._reference_required = False
+                            self._reference_fault_kind = None
                             self._tracker_recovery_ready = False
                             self._tracker_recovery_samples.clear()
                             self._clutched = True
@@ -1750,9 +1781,28 @@ class PikaSenseServicer(LeaderServicer):
             if now - getattr(self, "_last_debug_ts", 0.0) > 1.0:
                 self._last_debug_ts = now
                 if tracker is None:
+                    if (
+                        self._reference_required
+                        and self._tracker_recovery_ready
+                    ):
+                        held_reason = (
+                            "stable pose awaiting operator reference confirmation"
+                        )
+                    elif (
+                        self._reference_fault_kind
+                        == self._REFERENCE_FAULT_POSE_DISCONTINUITY
+                    ):
+                        held_reason = (
+                            "fused pose discontinuity quarantined; optical stream "
+                            "remains under observation"
+                        )
+                    else:
+                        held_reason = (
+                            self._last_tracker_health_reason or "pose unavailable"
+                        )
                     logger.warning(
                         "TRACKER: output held — %s reference_required=%s.",
-                        self._last_tracker_health_reason or "pose unavailable",
+                        held_reason,
                         self._reference_required,
                     )
                 else:
@@ -1793,6 +1843,23 @@ class PikaSenseServicer(LeaderServicer):
                 self._last_tracking_state = (
                     device_pb2.TrackingState.TRACKING_STATE_REFERENCE_PENDING
                 )
+            elif (
+                self._reference_required
+                and self._reference_fault_kind
+                == self._REFERENCE_FAULT_POSE_DISCONTINUITY
+                and self._tracker_recovery_ready
+            ):
+                self._last_tracking_state = (
+                    device_pb2.TrackingState.TRACKING_STATE_POSE_CONFIRM_REQUIRED
+                )
+            elif (
+                self._reference_required
+                and self._reference_fault_kind
+                == self._REFERENCE_FAULT_POSE_DISCONTINUITY
+            ):
+                self._last_tracking_state = (
+                    device_pb2.TrackingState.TRACKING_STATE_POSE_DISCONTINUITY
+                )
             elif self._reference_required and self._tracker_recovery_ready:
                 self._last_tracking_state = (
                     device_pb2.TrackingState.TRACKING_STATE_CONFIRM_REQUIRED
@@ -1823,6 +1890,8 @@ class PikaSenseServicer(LeaderServicer):
             if self._last_tracking_state in (
                 device_pb2.TrackingState.TRACKING_STATE_LOST,
                 device_pb2.TrackingState.TRACKING_STATE_RECOVERING,
+                device_pb2.TrackingState.TRACKING_STATE_POSE_DISCONTINUITY,
+                device_pb2.TrackingState.TRACKING_STATE_POSE_CONFIRM_REQUIRED,
             ):
                 self._last_action_quality = (
                     device_pb2.FrameQuality.FRAME_QUALITY_STALE

@@ -410,6 +410,45 @@ class TestAutoReference:
             for feature in wire
         )
 
+    def test_healthy_optical_pose_jump_has_pose_specific_lifecycle(self, tmp_path):
+        """A fused-pose reset must not be reported as Lighthouse loss.
+
+        This reproduces the measured 138 -> 153 -> 157 mm sequence: optical
+        timestamps, event counts and Lighthouse support remain healthy, while
+        the fused pose is too discontinuous to expose directly to the robot.
+        """
+        servicer = _make_leader(
+            tmp_path,
+            auto_reference=True,
+            cumulative_clutch=True,
+        )
+        servicer._tracker_health_enabled = True
+        servicer._tracker_recheck_samples = 2
+        servicer._tracker_recheck_window_s = 0.0
+        servicer.Connect(None, None)
+        servicer._compute_action()
+
+        servicer._device.timestamp_step_s = 0.032
+        servicer._device.optical_timestamp_step_s = 0.032
+        for position_m in (0.1377, 0.1530, 0.1574):
+            servicer._device.pose_position[0] = position_m
+            quarantined = list(servicer.GetAction(None, None))
+
+        assert servicer._reference_required is True
+        assert servicer._published_pos[0] == pytest.approx(0.0)
+        assert {
+            feature.tracking_state for feature in quarantined
+        } == {device_pb2.TrackingState.TRACKING_STATE_POSE_DISCONTINUITY}
+
+        stable = list(servicer.GetAction(None, None))
+        assert {
+            feature.tracking_state for feature in stable
+        } == {device_pb2.TrackingState.TRACKING_STATE_POSE_CONFIRM_REQUIRED}
+        assert all(
+            feature.quality == device_pb2.FrameQuality.FRAME_QUALITY_STALE
+            for feature in stable
+        )
+
     def test_clutch_reposition_bypasses_motion_gate_but_not_optical_gate(
         self, tmp_path
     ):

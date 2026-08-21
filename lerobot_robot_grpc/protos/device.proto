@@ -73,6 +73,12 @@ enum TrackingState {
     // The operator confirmation was accepted.  Collection must keep the
     // follower held while committing follower -> leader references.
     TRACKING_STATE_REFERENCE_PENDING = 7;
+    // Lighthouse measurements are still fresh, but the fused pose jumped in
+    // a way that cannot safely be distinguished from a localization reset.
+    TRACKING_STATE_POSE_DISCONTINUITY = 8;
+    // The post-jump pose is stable again.  The operator must explicitly align
+    // and confirm a new reference before motion can resume.
+    TRACKING_STATE_POSE_CONFIRM_REQUIRED = 9;
 }
 
 enum CalibrationStatus {
