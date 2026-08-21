@@ -223,6 +223,45 @@ def test_s1_cross_arm_collision_uses_10mm_entry_and_15mm_release():
     assert release.body_b.startswith("right_")
 
 
+def test_s1_near_torso_pair_uses_2mm_entry_and_5mm_release():
+    """The conservative link2 proxy gets a pair-specific near-field band.
+
+    This rounded joint target was captured from the 2026-08-21 live session.
+    The official collision proxies are about 4.98 mm apart even though the
+    rendered meshes still have a visibly larger gap.  It must not enter a new
+    collision latch at that distance, but an already-latched controller must
+    keep holding until the pair clears the 5 mm release threshold.
+    """
+    checker = S1CollisionChecker(S1_XML, arm="left", margin_m=0.005)
+    model = mujoco.MjModel.from_xml_path(str(S1_XML))
+    qpos = np.zeros(model.nq)
+
+    def set_arm(side: str, values):
+        for joint_name, value in zip(ARM_JOINTS[side], values, strict=True):
+            joint_id = mujoco.mj_name2id(
+                model, mujoco.mjtObj.mjOBJ_JOINT, joint_name
+            )
+            qpos[model.jnt_qposadr[joint_id]] = value
+
+    set_arm("right", RIGHT_HOME_RAD)
+    set_arm(
+        "left",
+        np.radians([39.4, -110.9, -39.5, -96.9, -1.7, -26.2, -9.3]),
+    )
+    torso_joint_id = mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_JOINT, "torso_lift_joint1"
+    )
+    qpos[model.jnt_qposadr[torso_joint_id]] = 0.6
+
+    entry = checker.check(qpos)
+    release = checker.check(qpos, release=True)
+    assert not entry.collided
+    assert release.collided
+    assert release.body_a == "left_arm_link2"
+    assert release.body_b == "torso_base_link"
+    assert 0.002 < release.distance_m < 0.005
+
+
 def test_arm_base_workspace_uses_normalized_local_coordinates():
     servicer = MuJoCoS1Servicer(xml_path=str(S1_XML), arm="left", render=False)
     workspace = S1ArmWorkspace(servicer._model, arm="left")
@@ -431,7 +470,7 @@ def test_near_torso_target_advances_to_a_safe_collision_prefix():
     """A colliding Cartesian goal may advance only to its last safe prefix.
 
     This is the deterministic pose captured from the 2026-08-20 recovery
-    session.  Accurate IK endpoints enter the 5 mm link2/torso margin while a
+    session.  Accurate IK endpoints enter the 2 mm link2/torso margin while a
     late fallback merely has a large residual.  The operator must receive the
     collision diagnosis, and the arm should approach the boundary without
     ever publishing a colliding joint state.
@@ -452,9 +491,9 @@ def test_near_torso_target_advances_to_a_safe_collision_prefix():
     )
     servicer._law.lock_reference(qpos)
     command = {
-        "hand.delta_pos.x": -0.03745060341221029,
-        "hand.delta_pos.y": -0.029548153905435078,
-        "hand.delta_pos.z": -0.0331993760702195,
+        "hand.delta_pos.x": -0.04868578443587338,
+        "hand.delta_pos.y": -0.0384126000770656,
+        "hand.delta_pos.z": -0.04315918889128535,
         "hand.delta_rot.qx": 0.026754698286012266,
         "hand.delta_rot.qy": 0.008380012753899059,
         "hand.delta_rot.qz": 0.010672686999462904,

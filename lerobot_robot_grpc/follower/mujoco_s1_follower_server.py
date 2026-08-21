@@ -71,6 +71,8 @@ _PHYSICS_PERIOD_S = 1.0 / 50.0
 GRIPPER_CLOSED_RAD = 1.6357
 DEFAULT_GRIPPER_MAX_DISTANCE_MM = 60.0
 S1_TELEOP_REACH_M = 1.0844833988
+_NEAR_TORSO_ENTRY_MARGIN_M = 0.002
+_NEAR_TORSO_RELEASE_MARGIN_M = 0.005
 
 
 def _scalar_feature_info(key: str) -> device_pb2.OneFeatureInfo:
@@ -169,6 +171,12 @@ class S1CollisionChecker:
         self._release_margin_m = max(0.008, self._entry_margin_m)
         self._cross_entry_margin_m = max(0.010, self._entry_margin_m)
         self._cross_release_margin_m = max(0.015, self._cross_entry_margin_m)
+        # The official link2/torso collision proxies are deliberately much
+        # more conservative than the rendered shells around the shoulder.
+        # Give this known near-field pair its own Schmitt band instead of
+        # weakening every body, floor and cross-arm collision threshold.
+        self._near_torso_entry_margin_m = _NEAR_TORSO_ENTRY_MARGIN_M
+        self._near_torso_release_margin_m = _NEAR_TORSO_RELEASE_MARGIN_M
         moving_margin = self._release_margin_m / 2.0
         fixed_margin = self._release_margin_m / 2.0
         opposite_margin = max(
@@ -238,10 +246,12 @@ class S1CollisionChecker:
             raise ValueError("S1 collision model did not expose the expected geoms")
         logger.info(
             "S1 collision checker ready: arm=%s entry/release=%.1f/%.1fmm "
-            "cross-arm=%.1f/%.1fmm geoms=%d",
+            "near-torso=%.1f/%.1fmm cross-arm=%.1f/%.1fmm geoms=%d",
             arm,
             self._entry_margin_m * 1000.0,
             self._release_margin_m * 1000.0,
+            self._near_torso_entry_margin_m * 1000.0,
+            self._near_torso_release_margin_m * 1000.0,
             self._cross_entry_margin_m * 1000.0,
             self._cross_release_margin_m * 1000.0,
             selected_count,
@@ -272,7 +282,10 @@ class S1CollisionChecker:
                 if (
                     not self._allowed_mount_pair(link1, body2)
                     and self._within_threshold(
-                        float(contact.dist), body2, release=release
+                        float(contact.dist),
+                        moving_link=link1,
+                        fixed_body=body2,
+                        release=release,
                     )
                 ):
                     collisions.append(
@@ -282,7 +295,10 @@ class S1CollisionChecker:
                 if (
                     not self._allowed_mount_pair(link2, body1)
                     and self._within_threshold(
-                        float(contact.dist), body1, release=release
+                        float(contact.dist),
+                        moving_link=link2,
+                        fixed_body=body1,
+                        release=release,
                     )
                 ):
                     collisions.append(
@@ -317,6 +333,7 @@ class S1CollisionChecker:
     def _within_threshold(
         self,
         distance_m: float,
+        moving_link: int,
         fixed_body: str,
         *,
         release: bool,
@@ -327,6 +344,12 @@ class S1CollisionChecker:
                 self._cross_release_margin_m
                 if release
                 else self._cross_entry_margin_m
+            )
+        elif moving_link == 2 and fixed_body == "torso_base_link":
+            threshold = (
+                self._near_torso_release_margin_m
+                if release
+                else self._near_torso_entry_margin_m
             )
         else:
             threshold = (
