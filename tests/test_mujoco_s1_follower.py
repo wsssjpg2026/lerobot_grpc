@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
 
@@ -111,6 +112,28 @@ def _send_action(servicer: MuJoCoS1Servicer, action: dict[str, float]):
     schema = {feature.key: feature for feature in info.action_features}
     request = device_pb2.Action(features=list(encode_feature(schema, action)))
     return servicer.SendAction(request, None)
+
+
+def test_s1_control_log_reports_actual_tcp_and_gripper(caplog):
+    servicer = MuJoCoS1Servicer(S1_XML, arm="left", torso_home_m=0.6)
+
+    with caplog.at_level(
+        logging.INFO,
+        logger="lerobot_robot_grpc.follower.mujoco_s1_follower_server",
+    ):
+        _send_action(servicer, _left_action(dx=0.01, gripper_mm=30.0))
+
+    message = next(
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("S1_CONTROL:")
+    )
+    assert "arm=left" in message
+    assert "tcp_actual_m=[" in message
+    assert "gripper_cmd_mm=30.0" in message
+    assert "gripper_target_rad=" in message
+    assert "gripper_actual_rad=" in message
+    assert "safety_flags=" in message
 
 
 def _left_ee_position(observation: dict[str, float]) -> np.ndarray:

@@ -1189,9 +1189,29 @@ class PoseDeltaLaw:
         now = time.time()
         if now - self._last_ik_debug_ts > 1.0:
             self._last_ik_debug_ts = now
+            published_qpos = qpos_rad.copy()
+            published_qpos[list(self._body_dofs)] = sol_rad
+            published_pos = self._fk(published_qpos)[:3, 3]
+            published_pos_err = float(np.linalg.norm(published_pos - target_pos))
+            delta_rotvec_deg = np.degrees(
+                Rot.from_matrix(r_delta).as_rotvec()
+            )
             logger.info(
-                "IK: pos_err=%.1fmm manip=%.4f q_deg=[%s]",
-                result.pos_err * 1000.0, result.manipulability,
+                "IK: dpos_mm=[%.1f,%.1f,%.1f] "
+                "drotvec_deg=[%.1f,%.1f,%.1f] "
+                "target_tcp_m=[%.3f,%.3f,%.3f] "
+                "published_tcp_m=[%.3f,%.3f,%.3f] "
+                "solve_pos_err=%.1fmm published_pos_err=%.1fmm "
+                "rot_err=%.2fdeg manip=%.4f gripper=%.1f%% q_deg=[%s]",
+                *(delta_pos * 1000.0),
+                *delta_rotvec_deg,
+                *target_pos,
+                *published_pos,
+                result.pos_err * 1000.0,
+                published_pos_err * 1000.0,
+                math.degrees(result.rot_err),
+                result.manipulability,
+                gripper_0_100,
                 ", ".join("%.1f" % math.degrees(q) for q in sol_rad),
             )
 

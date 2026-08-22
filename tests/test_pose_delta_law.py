@@ -17,6 +17,7 @@ Under test (align-official-decisions.md decisions 2/4/6):
 
 from __future__ import annotations
 
+import logging
 import math
 from pathlib import Path
 
@@ -191,6 +192,28 @@ class TestFkConsistency:
         law.lock_reference(qpos)
         sol = law.solve(_delta(0.05), qpos)
         assert not sol.rejected and not sol.held
+
+    def test_accepted_solve_log_exposes_command_and_tcp(self, caplog):
+        law = _law()
+        qpos = _home_qpos()
+        law.lock_reference(qpos)
+
+        with caplog.at_level(
+            logging.INFO,
+            logger="lerobot_robot_grpc.follower.pose_delta_law",
+        ):
+            law.solve(_delta(dx=0.03, dy=-0.01, dz=0.02), qpos)
+
+        message = next(
+            record.getMessage()
+            for record in caplog.records
+            if record.getMessage().startswith("IK:")
+        )
+        assert "dpos_mm=[30.0,-10.0,20.0]" in message
+        assert "drotvec_deg=[0.0,0.0,0.0]" in message
+        assert "target_tcp_m=[" in message
+        assert "published_tcp_m=[" in message
+        assert "published_pos_err=" in message
 
 
 class TestJumpReset:

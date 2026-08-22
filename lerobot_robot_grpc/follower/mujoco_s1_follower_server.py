@@ -810,6 +810,14 @@ class MuJoCoS1Servicer(FollowerServicer):
             candidate_qpos_adapter=self._with_gripper_candidate,
             workspace_checker=self._workspace,
         )
+        self._teleop_site_id = self._mj.mj_name2id(
+            self._model,
+            self._mj.mjtObj.mjOBJ_SITE,
+            f"{arm}_teleop_site",
+        )
+        if self._teleop_site_id < 0:
+            raise ValueError(f"S1 {arm}_teleop_site not found")
+        self._last_control_debug_monotonic = 0.0
         self._law.lock_reference(self._data.qpos.copy())
         self._reference_locked_monotonic = time.monotonic()
         logger.info(
@@ -1104,6 +1112,26 @@ class MuJoCoS1Servicer(FollowerServicer):
                 )
                 for joint_name in EFFECTIVE_ACTION_JOINTS[self._arm]
             }
+            if now - self._last_control_debug_monotonic >= 1.0:
+                self._last_control_debug_monotonic = now
+                tcp_actual = self._data.site_xpos[self._teleop_site_id]
+                gripper_actual = self._data.qpos[
+                    self._qpos_by_joint[f"{self._arm}_active_joint1"]
+                ]
+                logger.info(
+                    "S1_CONTROL: arm=%s tcp_actual_m=[%.3f,%.3f,%.3f] "
+                    "gripper_cmd_mm=%.1f gripper_target_rad=%.3f "
+                    "gripper_actual_rad=%.3f safety_flags=%d applied_mask=%d "
+                    "reason=%s",
+                    self._arm,
+                    *tcp_actual,
+                    float(generic_action["gripper.distance"]),
+                    float(self._target_ctrl[gripper_actuator]),
+                    float(gripper_actual),
+                    int(self._last_safety.flags),
+                    int(self._last_safety.applied_mask),
+                    self._last_safety.reason or "-",
+                )
         return device_pb2.ActionResult(
             features=list(
                 encode_feature(self._effective_act_ft_info, effective)

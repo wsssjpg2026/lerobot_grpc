@@ -11,11 +11,22 @@ import numpy as np
 import pytest
 
 from lerobot_robot_grpc.leader.pika_sense_leader_server import (
+    _format_control_delta,
     build_R_lh2base,
     command_state_edge,
     compute_position_delta_body,
     compute_rotation_delta_rotvec,
 )
+
+
+def test_control_delta_log_keeps_signed_translation_and_rotation_axes():
+    text = _format_control_delta(
+        np.array([0.010, -0.020, 0.004]),
+        np.radians(np.array([5.0, -10.0, 15.0])),
+    )
+
+    assert "dpos_mm=[10.0,-20.0,4.0]" in text
+    assert "drotvec_deg=[5.0,-10.0,15.0]" in text
 
 
 class TestPositionDeltaBody:

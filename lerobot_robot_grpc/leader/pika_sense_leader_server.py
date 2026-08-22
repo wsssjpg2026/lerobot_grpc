@@ -111,6 +111,19 @@ def compute_rotation_delta_rotvec(
     return Rot.from_matrix(r_delta).as_rotvec()
 
 
+def _format_control_delta(
+    delta_pos_m: np.ndarray,
+    delta_rotvec_rad: np.ndarray,
+) -> str:
+    """Format signed per-axis command values for stable server diagnostics."""
+    dpos_mm = np.asarray(delta_pos_m, dtype=float) * 1000.0
+    drotvec_deg = np.degrees(np.asarray(delta_rotvec_rad, dtype=float))
+    return (
+        "dpos_mm=[%.1f,%.1f,%.1f] drotvec_deg=[%.1f,%.1f,%.1f]"
+        % (*dpos_mm, *drotvec_deg)
+    )
+
+
 def command_state_edge(command_now: int | None, command_prev: int | None) -> bool:
     """True when Pika's quick-squeeze command state changed since the last sample.
 
@@ -1820,56 +1833,6 @@ class PikaSenseServicer(LeaderServicer):
                     gripper_distance,
                 )
 
-            # --- Diagnostic logging (1 Hz) ---
-            if now - getattr(self, "_last_debug_ts", 0.0) > 1.0:
-                self._last_debug_ts = now
-                if tracker is None:
-                    if (
-                        self._reference_required
-                        and self._tracker_recovery_ready
-                    ):
-                        held_reason = (
-                            "stable pose awaiting operator reference confirmation"
-                        )
-                    elif (
-                        self._reference_fault_kind
-                        == self._REFERENCE_FAULT_POSE_DISCONTINUITY
-                    ):
-                        held_reason = (
-                            "fused pose discontinuity quarantined; optical stream "
-                            "remains under observation"
-                        )
-                    else:
-                        held_reason = (
-                            self._last_tracker_health_reason or "pose unavailable"
-                        )
-                    logger.warning(
-                        "TRACKER: output held — %s reference_required=%s.",
-                        held_reason,
-                        self._reference_required,
-                    )
-                else:
-                    off_m = (
-                        0.0
-                        if self._t_begin_pos is None
-                        else float(np.linalg.norm(tracker[0] - self._t_begin_pos))
-                    )
-                    logger.info(
-                        "TRACKER: pos=[%.3f,%.3f,%.3f]m off=%.1fmm pub=%.1fmm "
-                        "grip=%.1fmm optical_events=%d channels=%d confidence=%s",
-                        tracker[0][0], tracker[0][1], tracker[0][2],
-                        off_m * 1000.0,
-                        float(np.linalg.norm(self._published_pos)) * 1000.0,
-                        gripper_distance,
-                        self._last_valid_tracker_sample.optical_measurement_count,
-                        self._last_valid_tracker_sample.optical_lighthouse_count,
-                        (
-                            "n/a"
-                            if self._last_valid_tracker_sample.pose_confidence is None
-                            else f"{self._last_valid_tracker_sample.pose_confidence:.2f}"
-                        ),
-                    )
-
             # --- Encode ---
             delta_quat = Rot.from_rotvec(delta_rotvec).as_quat()  # [x,y,z,w]
             generic_action = {
@@ -1951,6 +1914,90 @@ class PikaSenseServicer(LeaderServicer):
                 self._last_action_quality = (
                     device_pb2.FrameQuality.FRAME_QUALITY_GOOD
                 )
+
+            # --- Diagnostic logging (1 Hz, server-side only) --------------
+            if now - getattr(self, "_last_debug_ts", 0.0) > 1.0:
+                self._last_debug_ts = now
+                state_name = device_pb2.TrackingState.Name(
+                    self._last_tracking_state
+                ).removeprefix("TRACKING_STATE_")
+                quality_name = device_pb2.FrameQuality.Name(
+                    self._last_action_quality
+                ).removeprefix("FRAME_QUALITY_")
+                control_delta = _format_control_delta(delta_pos, delta_rotvec)
+                sample = self._last_valid_tracker_sample
+                if sample is None:
+                    optical_age = "n/a"
+                    optical_events = 0
+                    optical_channels = 0
+                    confidence = "n/a"
+                else:
+                    current_optical_age_s = sample.optical_age_s + max(
+                        0.0, now - sample.received_monotonic_s
+                    )
+                    optical_age = f"{current_optical_age_s * 1000.0:.0f}ms"
+                    optical_events = sample.optical_measurement_count
+                    optical_channels = sample.optical_lighthouse_count
+                    confidence = (
+                        "n/a"
+                        if sample.pose_confidence is None
+                        else f"{sample.pose_confidence:.2f}"
+                    )
+                if tracker is None:
+                    if self._reference_required and self._tracker_recovery_ready:
+                        held_reason = (
+                            "stable pose awaiting operator reference confirmation"
+                        )
+                    elif (
+                        self._reference_fault_kind
+                        == self._REFERENCE_FAULT_POSE_DISCONTINUITY
+                    ):
+                        held_reason = (
+                            "fused pose discontinuity quarantined; optical stream "
+                            "remains under observation"
+                        )
+                    else:
+                        held_reason = (
+                            self._last_tracker_health_reason or "pose unavailable"
+                        )
+                    logger.warning(
+                        "TRACKER: state=%s quality=%s output_held reason=%s "
+                        "%s grip=%.1fmm optical_age=%s optical_events=%d "
+                        "channels=%d confidence=%s reference_required=%s",
+                        state_name,
+                        quality_name,
+                        held_reason,
+                        control_delta,
+                        gripper_distance,
+                        optical_age,
+                        optical_events,
+                        optical_channels,
+                        confidence,
+                        self._reference_required,
+                    )
+                else:
+                    off_m = (
+                        0.0
+                        if self._t_begin_pos is None
+                        else float(np.linalg.norm(tracker[0] - self._t_begin_pos))
+                    )
+                    logger.info(
+                        "TRACKER: state=%s quality=%s "
+                        "pos=[%.3f,%.3f,%.3f]m off=%.1fmm %s grip=%.1fmm "
+                        "optical_age=%s optical_events=%d channels=%d confidence=%s",
+                        state_name,
+                        quality_name,
+                        tracker[0][0],
+                        tracker[0][1],
+                        tracker[0][2],
+                        off_m * 1000.0,
+                        control_delta,
+                        gripper_distance,
+                        optical_age,
+                        optical_events,
+                        optical_channels,
+                        confidence,
+                    )
             return {
                 wire_key: generic_action[generic_key]
                 for generic_key, wire_key in zip(
