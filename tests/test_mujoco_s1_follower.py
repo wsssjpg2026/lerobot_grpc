@@ -262,6 +262,114 @@ def test_s1_near_torso_pair_uses_2mm_entry_and_5mm_release():
     assert 0.002 < release.distance_m < 0.005
 
 
+def test_s1_distance_provider_reports_a_distance_increasing_joint_gradient():
+    """Soft collision constraints expose a usable whole-arm gradient.
+
+    The expected sign is verified against an independent finite perturbation
+    of the packaged S1 model rather than by repeating the adapter formula.
+    """
+    checker = S1CollisionChecker(
+        S1_XML,
+        arm="left",
+        margin_m=0.005,
+        self_soft_distance_ratio=0.06,
+        cross_arm_soft_distance_ratio=0.10,
+    )
+    model = mujoco.MjModel.from_xml_path(str(S1_XML))
+    qpos = np.zeros(model.nq)
+
+    for side, values in (
+        ("left", np.radians([39.4, -110.9, -39.5, -96.9, -1.7, -26.2, -9.3])),
+        ("right", RIGHT_HOME_RAD),
+    ):
+        for joint_name, value in zip(ARM_JOINTS[side], values, strict=True):
+            joint_id = mujoco.mj_name2id(
+                model, mujoco.mjtObj.mjOBJ_JOINT, joint_name
+            )
+            qpos[model.jnt_qposadr[joint_id]] = value
+    torso_joint_id = mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_JOINT, "torso_lift_joint1"
+    )
+    qpos[model.jnt_qposadr[torso_joint_id]] = 0.6
+
+    constraints = checker.active_constraints(qpos)
+    torso = next(
+        item
+        for item in constraints
+        if (item.body_a, item.body_b)
+        == ("left_arm_link2", "torso_base_link")
+    )
+    assert torso.activation_distance_m == pytest.approx(
+        0.06 * S1_TELEOP_REACH_M
+    )
+    assert 0.002 < torso.distance_m < 0.005
+    assert torso.gradient.shape == (7,)
+    assert np.linalg.norm(torso.gradient) > 1e-4
+
+    arm_dofs = []
+    for name in ARM_JOINTS["left"]:
+        joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
+        arm_dofs.append(int(model.jnt_qposadr[joint_id]))
+    escaped = qpos.copy()
+    escaped[arm_dofs] += 1e-4 * torso.gradient / np.linalg.norm(torso.gradient)
+    escaped_torso = next(
+        item
+        for item in checker.active_constraints(escaped)
+        if (item.body_a, item.body_b)
+        == ("left_arm_link2", "torso_base_link")
+    )
+    assert escaped_torso.distance_m > torso.distance_m
+
+
+def test_s1_distance_provider_uses_the_larger_cross_arm_soft_band():
+    checker = S1CollisionChecker(
+        S1_XML,
+        arm="left",
+        margin_m=0.005,
+        self_soft_distance_ratio=0.06,
+        cross_arm_soft_distance_ratio=0.10,
+    )
+    model = mujoco.MjModel.from_xml_path(str(S1_XML))
+    qpos = np.zeros(model.nq)
+    for side, values in (
+        (
+            "left",
+            (
+                -2.740171843556137,
+                1.5692704245705758,
+                -2.4330455789586254,
+                -2.158771819326527,
+                -1.103794410060629,
+                -0.3274900341972172,
+                0.17020363794239235,
+            ),
+        ),
+        ("right", RIGHT_HOME_RAD),
+    ):
+        for joint_name, value in zip(ARM_JOINTS[side], values, strict=True):
+            joint_id = mujoco.mj_name2id(
+                model, mujoco.mjtObj.mjOBJ_JOINT, joint_name
+            )
+            qpos[model.jnt_qposadr[joint_id]] = value
+    torso_joint_id = mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_JOINT, "torso_lift_joint1"
+    )
+    qpos[model.jnt_qposadr[torso_joint_id]] = 0.6
+
+    cross_arm = [
+        item
+        for item in checker.active_constraints(qpos)
+        if item.body_a.startswith("left_") and item.body_b.startswith("right_")
+    ]
+    assert cross_arm
+    assert all(
+        item.activation_distance_m
+        == pytest.approx(0.10 * S1_TELEOP_REACH_M)
+        for item in cross_arm
+    )
+    assert min(item.distance_m for item in cross_arm) < 0.015
+
+
 def test_arm_base_workspace_uses_normalized_local_coordinates():
     servicer = MuJoCoS1Servicer(xml_path=str(S1_XML), arm="left", render=False)
     workspace = S1ArmWorkspace(servicer._model, arm="left")

@@ -20,6 +20,7 @@ import numpy as np
 from google.protobuf.empty_pb2 import Empty
 
 from lerobot_robot_grpc.action_safety import AppliedGroup, SafetyFlag, groups_for_arm
+from lerobot_robot_grpc.follower.collision_distance import CollisionConstraint
 from lerobot_robot_grpc.follower.follower_server import FollowerServicer
 from lerobot_robot_grpc.follower.pose_delta_law import PoseDeltaLaw
 from lerobot_robot_grpc.follower.utils import encode_feature, load_feature
@@ -152,11 +153,20 @@ class S1CollisionChecker:
         *,
         arm: str,
         margin_m: float = 0.005,
+        self_soft_distance_ratio: float = 0.06,
+        cross_arm_soft_distance_ratio: float = 0.10,
+        reach_m: float = S1_TELEOP_REACH_M,
     ) -> None:
         if arm not in ARM_JOINTS:
             raise ValueError(f"arm must be 'left' or 'right', got {arm!r}")
         if margin_m < 0.0:
             raise ValueError("collision margin must be non-negative")
+        if reach_m <= 0.0:
+            raise ValueError("collision reach must be positive")
+        if self_soft_distance_ratio <= 0.0:
+            raise ValueError("self soft-distance ratio must be positive")
+        if cross_arm_soft_distance_ratio <= 0.0:
+            raise ValueError("cross-arm soft-distance ratio must be positive")
 
         import mujoco
 
@@ -177,13 +187,29 @@ class S1CollisionChecker:
         # weakening every body, floor and cross-arm collision threshold.
         self._near_torso_entry_margin_m = _NEAR_TORSO_ENTRY_MARGIN_M
         self._near_torso_release_margin_m = _NEAR_TORSO_RELEASE_MARGIN_M
-        moving_margin = self._release_margin_m / 2.0
-        fixed_margin = self._release_margin_m / 2.0
+        self._self_soft_distance_m = float(reach_m) * float(
+            self_soft_distance_ratio
+        )
+        self._cross_soft_distance_m = float(reach_m) * float(
+            cross_arm_soft_distance_ratio
+        )
+        if self._self_soft_distance_m < self._release_margin_m:
+            raise ValueError("self soft distance must cover the hard release margin")
+        if self._cross_soft_distance_m < self._cross_release_margin_m:
+            raise ValueError(
+                "cross-arm soft distance must cover the hard release margin"
+            )
+        # Generate predictive contacts throughout the soft band.  Hard checks
+        # below still filter these contacts back to their millimetre thresholds.
+        moving_margin = self._self_soft_distance_m / 2.0
+        fixed_margin = self._self_soft_distance_m - moving_margin
         opposite_margin = max(
-            self._cross_release_margin_m - moving_margin,
+            self._cross_soft_distance_m - moving_margin,
             fixed_margin,
         )
         selected_count = 0
+        moving_body_links: dict[str, int] = {}
+        fixed_body_names: set[str] = set()
         for geom in spec.geoms:
             body_name = geom.parent.name
             is_collision_geom = int(geom.group) == 3
@@ -198,14 +224,50 @@ class S1CollisionChecker:
             geom.conaffinity = 1 if moving or fixed else 0
             if moving:
                 geom.margin = moving_margin
+                moving_body_links[body_name] = int(
+                    _arm_collision_link(body_name, arm)
+                )
             elif fixed and _arm_collision_link(body_name, opposite) is not None:
                 geom.margin = opposite_margin
+                fixed_body_names.add(body_name)
             elif fixed:
                 geom.margin = fixed_margin
+                fixed_body_names.add(body_name)
             else:
                 geom.margin = 0.0
             if moving or fixed:
                 selected_count += 1
+
+        # Do not ask MuJoCo broad phase to generate contacts that the semantic
+        # policy will always discard.  This is especially important with a
+        # centimetre-scale soft band: the wrist rigid assembly and coupled
+        # gripper otherwise create hundreds of irrelevant predictive contacts.
+        moving_bodies = sorted(moving_body_links)
+        exclude_index = 0
+        for index, body_a in enumerate(moving_bodies):
+            for body_b in moving_bodies[index + 1 :]:
+                if abs(moving_body_links[body_a] - moving_body_links[body_b]) < 3:
+                    spec.add_exclude(
+                        name=f"teleop_allow_{exclude_index}",
+                        bodyname1=body_a,
+                        bodyname2=body_b,
+                    )
+                    exclude_index += 1
+        link1_bodies = [
+            body
+            for body, link in moving_body_links.items()
+            if link == 1
+        ]
+        for body_a in sorted(link1_bodies):
+            for body_b in (f"{arm}_arm_base_link", "torso_base_link"):
+                if body_b not in fixed_body_names:
+                    continue
+                spec.add_exclude(
+                    name=f"teleop_allow_{exclude_index}",
+                    bodyname1=body_a,
+                    bodyname2=body_b,
+                )
+                exclude_index += 1
 
         floor = spec.worldbody.add_geom(
             name="teleop_safety_floor",
@@ -225,6 +287,21 @@ class S1CollisionChecker:
         self._data = mujoco.MjData(self._model)
         self._arm = arm
         self._opposite = opposite
+        self._controlled_dofs = np.asarray(
+            [
+                int(
+                    self._model.jnt_dofadr[
+                        mujoco.mj_name2id(
+                            self._model,
+                            mujoco.mjtObj.mjOBJ_JOINT,
+                            name,
+                        )
+                    ]
+                )
+                for name in ARM_JOINTS[arm]
+            ],
+            dtype=int,
+        )
         self._moving_link_by_geom: dict[int, int] = {}
         self._fixed_geoms: set[int] = set()
         self._body_name_by_geom: dict[int, str] = {}
@@ -256,6 +333,141 @@ class S1CollisionChecker:
             self._cross_release_margin_m * 1000.0,
             selected_count,
         )
+
+    def active_constraints(
+        self, qpos_rad: np.ndarray
+    ) -> tuple[CollisionConstraint, ...]:
+        """Return all semantic S1 pairs currently inside a soft distance.
+
+        MuJoCo broad phase supplies candidate contacts.  For each closest
+        geom pair, ``mj_geomDistance`` supplies the signed distance and closest
+        points; point Jacobians then map its normal into the seven controlled
+        arm joints.  Multiple convex pieces of the same body pair collapse to
+        the most severe constraint.
+        """
+        qpos = np.asarray(qpos_rad, dtype=float)
+        if qpos.shape != (self._model.nq,):
+            raise ValueError(
+                f"expected S1 qpos shape {(self._model.nq,)}, got {qpos.shape}"
+            )
+        self._data.qpos[:] = qpos
+        self._mj.mj_forward(self._model, self._data)
+        active: dict[tuple[str, str], CollisionConstraint] = {}
+        nv = self._model.nv
+        for contact_id in range(self._data.ncon):
+            contact = self._data.contact[contact_id]
+            oriented = self._oriented_semantic_pair(
+                int(contact.geom1), int(contact.geom2)
+            )
+            if oriented is None:
+                continue
+            geom_a, geom_b, body_a, body_b, moving_link, cross_arm = oriented
+            activation = (
+                self._cross_soft_distance_m
+                if cross_arm
+                else self._self_soft_distance_m
+            )
+            fromto = np.zeros(6, dtype=float)
+            distance = float(
+                self._mj.mj_geomDistance(
+                    self._model,
+                    self._data,
+                    geom_a,
+                    geom_b,
+                    activation + 1e-9,
+                    fromto,
+                )
+            )
+            if distance > activation:
+                continue
+            separation = fromto[3:] - fromto[:3]
+            norm = float(np.linalg.norm(separation))
+            if norm > 1e-12:
+                normal = separation / norm
+            else:
+                # MuJoCo's contact x-axis is the geom1→geom2 normal.  This is
+                # needed only for penetrating pairs whose closest points merge.
+                normal = np.asarray(contact.frame[:3], dtype=float)
+                if (geom_a, geom_b) != (int(contact.geom1), int(contact.geom2)):
+                    normal = -normal
+            jac_a = np.zeros((3, nv), dtype=float)
+            jac_b = np.zeros((3, nv), dtype=float)
+            body_a_id = int(self._model.geom_bodyid[geom_a])
+            body_b_id = int(self._model.geom_bodyid[geom_b])
+            self._mj.mj_jac(
+                self._model, self._data, jac_a, None, fromto[:3], body_a_id
+            )
+            self._mj.mj_jac(
+                self._model, self._data, jac_b, None, fromto[3:], body_b_id
+            )
+            gradient = normal @ (jac_b - jac_a)
+            minimum = self._hard_entry_distance(moving_link, body_b, cross_arm)
+            constraint = CollisionConstraint(
+                body_a=body_a,
+                body_b=body_b,
+                distance_m=distance,
+                activation_distance_m=activation,
+                minimum_distance_m=minimum,
+                gradient=np.asarray(gradient[self._controlled_dofs], dtype=float),
+            )
+            key = (body_a, body_b)
+            previous = active.get(key)
+            if previous is None or constraint.distance_m < previous.distance_m:
+                active[key] = constraint
+        return tuple(
+            sorted(
+                active.values(),
+                key=lambda item: (
+                    item.distance_m / item.activation_distance_m,
+                    item.body_a,
+                    item.body_b,
+                ),
+            )
+        )
+
+    def _oriented_semantic_pair(
+        self, geom1: int, geom2: int
+    ) -> tuple[int, int, str, str, int, bool] | None:
+        link1 = self._moving_link_by_geom.get(geom1)
+        link2 = self._moving_link_by_geom.get(geom2)
+        body1 = self._body_name_by_geom.get(geom1, "world")
+        body2 = self._body_name_by_geom.get(geom2, "world")
+        if link1 is not None and geom2 in self._fixed_geoms:
+            if self._allowed_mount_pair(link1, body2):
+                return None
+            return (
+                geom1,
+                geom2,
+                body1,
+                body2,
+                link1,
+                _arm_collision_link(body2, self._opposite) is not None,
+            )
+        if link2 is not None and geom1 in self._fixed_geoms:
+            if self._allowed_mount_pair(link2, body1):
+                return None
+            return (
+                geom2,
+                geom1,
+                body2,
+                body1,
+                link2,
+                _arm_collision_link(body1, self._opposite) is not None,
+            )
+        if link1 is not None and link2 is not None and abs(link1 - link2) >= 3:
+            if (body2, body1) < (body1, body2):
+                return geom2, geom1, body2, body1, link2, False
+            return geom1, geom2, body1, body2, link1, False
+        return None
+
+    def _hard_entry_distance(
+        self, moving_link: int, fixed_body: str, cross_arm: bool
+    ) -> float:
+        if cross_arm:
+            return self._cross_entry_margin_m
+        if moving_link == 2 and fixed_body == "torso_base_link":
+            return self._near_torso_entry_margin_m
+        return self._entry_margin_m
 
     def check(
         self,
