@@ -362,9 +362,9 @@ class S1CollisionChecker:
     ) -> tuple[CollisionConstraint, ...]:
         """Return all semantic S1 pairs currently inside a soft distance.
 
-        MuJoCo broad phase supplies candidate contacts.  For each closest
-        geom pair, ``mj_geomDistance`` supplies the signed distance and closest
-        points; point Jacobians then map its normal into the seven controlled
+        MuJoCo's predictive contacts supply a mutually consistent signed
+        distance, midpoint, and normal.  Reconstructed surface points and
+        their point Jacobians then map the normal into the seven controlled
         arm joints.  Multiple convex pieces of the same body pair collapse to
         the most severe constraint.
         """
@@ -390,29 +390,30 @@ class S1CollisionChecker:
                 if cross_arm
                 else self._self_soft_distance_m
             )
-            fromto = np.zeros(6, dtype=float)
-            distance = float(
-                self._mj.mj_geomDistance(
-                    self._soft_model,
-                    self._soft_data,
-                    geom_a,
-                    geom_b,
-                    activation + 1e-9,
-                    fromto,
-                )
-            )
+            # The contact is authoritative.  Re-querying a predictive mesh
+            # contact with mj_geomDistance can select a different convex
+            # piece and occasionally return a false zero distance.  That
+            # discontinuity makes the null-space avoidance term amplify
+            # sub-millimetre tracker noise into multi-degree joint motion.
+            distance = float(contact.dist)
             if distance > activation:
                 continue
-            separation = fromto[3:] - fromto[:3]
-            norm = float(np.linalg.norm(separation))
-            if norm > 1e-12:
-                normal = separation / norm
-            else:
-                # MuJoCo's contact x-axis is the geom1→geom2 normal.  This is
-                # needed only for penetrating pairs whose closest points merge.
-                normal = np.asarray(contact.frame[:3], dtype=float)
-                if (geom_a, geom_b) != (int(contact.geom1), int(contact.geom2)):
-                    normal = -normal
+            midpoint = np.asarray(contact.pos, dtype=float)
+            normal = np.asarray(contact.frame[:3], dtype=float)
+            if (geom_a, geom_b) != (int(contact.geom1), int(contact.geom2)):
+                normal = -normal
+            if not (
+                np.isfinite(distance)
+                and np.isfinite(midpoint).all()
+                and np.isfinite(normal).all()
+            ):
+                raise ValueError("MuJoCo produced a non-finite predictive contact")
+            normal_norm = float(np.linalg.norm(normal))
+            if normal_norm <= 1e-12:
+                raise ValueError("MuJoCo produced a zero-length contact normal")
+            normal /= normal_norm
+            point_a = midpoint - 0.5 * distance * normal
+            point_b = midpoint + 0.5 * distance * normal
             jac_a = np.zeros((3, nv), dtype=float)
             jac_b = np.zeros((3, nv), dtype=float)
             body_a_id = int(self._soft_model.geom_bodyid[geom_a])
@@ -422,7 +423,7 @@ class S1CollisionChecker:
                 self._soft_data,
                 jac_a,
                 None,
-                fromto[:3],
+                point_a,
                 body_a_id,
             )
             self._mj.mj_jac(
@@ -430,7 +431,7 @@ class S1CollisionChecker:
                 self._soft_data,
                 jac_b,
                 None,
-                fromto[3:],
+                point_b,
                 body_b_id,
             )
             gradient = normal @ (jac_b - jac_a)

@@ -492,6 +492,43 @@ def test_collision_aware_ik_converges_without_fixed_target_joint_oscillation():
     assert float(np.ptp(tail, axis=0).max()) < np.radians(0.02)
 
 
+def test_collision_aware_ik_does_not_amplify_submillimeter_tracker_jitter():
+    """Predictive contacts must not turn optical noise into arm motion."""
+    servicer = MuJoCoS1Servicer(
+        xml_path=str(S1_XML),
+        arm="left",
+        render=False,
+        stale_timeout_s=10.0,
+        collision_aware_ik=True,
+        reference_grace_s=0.0,
+    )
+    body_dofs = [
+        servicer._qpos_by_joint[name] for name in ARM_JOINTS["left"]
+    ]
+    qpos = servicer._data.qpos.copy()
+    qpos[body_dofs] = np.radians(
+        [66.2, -92.2, -23.3, -126.4, -5.8, 4.9, -11.5]
+    )
+    servicer._data.qpos[:] = qpos
+    for name, value in zip(ARM_JOINTS["left"], qpos[body_dofs], strict=True):
+        servicer._target_ctrl[servicer._actuator_by_name[name]] = value
+    servicer.SetReference(Empty(), None)
+
+    published = []
+    for frame in range(90):
+        action = _left_action(dy=0.00045 if frame % 2 else -0.00045)
+        _send_action(servicer, action)
+        published.append(
+            [
+                servicer._target_ctrl[servicer._actuator_by_name[name]]
+                for name in ARM_JOINTS["left"]
+            ]
+        )
+
+    tail_deg = np.degrees(np.asarray(published[-60:]))
+    assert float(np.max(np.ptp(tail_deg, axis=0))) <= 0.2
+
+
 def test_collision_aware_ik_routes_the_whole_arm_around_the_torso_boundary():
     """The captured live target should not become a permanent hard-gate hold."""
     servicer = MuJoCoS1Servicer(
@@ -875,7 +912,8 @@ def test_near_torso_target_advances_to_a_safe_collision_prefix():
     session.  Accurate IK endpoints enter the 2 mm link2/torso margin while a
     late fallback merely has a large residual.  The operator must receive the
     collision diagnosis, and the arm should approach the boundary without
-    ever publishing a colliding joint state.
+    ever publishing a colliding joint state.  The proactive avoidance layer is
+    disabled here so this test isolates the independent hard-gate fallback.
     """
     servicer = MuJoCoS1Servicer(
         xml_path=str(S1_XML),
@@ -883,6 +921,7 @@ def test_near_torso_target_advances_to_a_safe_collision_prefix():
         render=False,
         torso_home_m=0.6,
         stale_timeout_s=10.0,
+        collision_aware_ik=False,
     )
     body_dofs = [
         servicer._qpos_by_joint[name] for name in ARM_JOINTS["left"]
