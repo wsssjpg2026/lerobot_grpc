@@ -604,6 +604,66 @@ def test_collision_aware_ik_meets_the_30hz_compute_budget():
     assert np.percentile(elapsed, 99) <= 0.020
 
 
+def test_reference_grace_holds_identity_before_default_avoidance_can_adjust():
+    servicer = MuJoCoS1Servicer(
+        xml_path=str(S1_XML),
+        arm="left",
+        render=False,
+        stale_timeout_s=10.0,
+    )
+    body_dofs = [
+        servicer._qpos_by_joint[name] for name in ARM_JOINTS["left"]
+    ]
+    qpos = servicer._data.qpos.copy()
+    qpos[body_dofs] = np.radians(
+        [39.4, -110.9, -39.5, -96.9, -1.7, -26.2, -9.3]
+    )
+    servicer._data.qpos[:] = qpos
+    for name, value in zip(ARM_JOINTS["left"], qpos[body_dofs], strict=True):
+        servicer._target_ctrl[servicer._actuator_by_name[name]] = value
+    servicer.SetReference(Empty(), None)
+
+    def effective_arm(response):
+        schema = {
+            feature.key: feature
+            for feature in servicer.GetInfo(None, None).effective_action_features
+        }
+        effective = {}
+        for feature in response.features:
+            load_feature(feature, schema, effective)
+        return np.asarray(
+            [effective[f"{name}.pos"] for name in ARM_JOINTS["left"]]
+        )
+
+    immediate = effective_arm(_send_action(servicer, _left_action()))
+    np.testing.assert_allclose(immediate, qpos[body_dofs], atol=1e-9)
+
+    servicer._reference_locked_monotonic -= servicer._reference_grace_s + 0.01
+    adjusted = effective_arm(_send_action(servicer, _left_action()))
+    internal_target = np.asarray(
+        [
+            servicer._target_ctrl[servicer._actuator_by_name[name]]
+            for name in ARM_JOINTS["left"]
+        ]
+    )
+    np.testing.assert_allclose(adjusted, internal_target, atol=1e-6)
+    candidate = qpos.copy()
+    candidate[body_dofs] = internal_target
+    before = next(
+        item
+        for item in servicer._collision_checker.active_constraints(qpos)
+        if (item.body_a, item.body_b)
+        == ("left_arm_link2", "torso_base_link")
+    )
+    after = next(
+        item
+        for item in servicer._collision_checker.active_constraints(candidate)
+        if (item.body_a, item.body_b)
+        == ("left_arm_link2", "torso_base_link")
+    )
+    assert after.distance_m > before.distance_m
+
+
 def test_arm_base_workspace_uses_normalized_local_coordinates():
     servicer = MuJoCoS1Servicer(xml_path=str(S1_XML), arm="left", render=False)
     workspace = S1ArmWorkspace(servicer._model, arm="left")

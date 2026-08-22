@@ -190,6 +190,9 @@ class PoseDeltaLaw:
             None if workspace_delta_m is None else float(workspace_delta_m)
         )
         self._workspace_checker = workspace_checker
+        self._collision_aware_ik = bool(
+            collision_aware_ik and collision_distance_provider is not None
+        )
 
         # FK / collision scratch (never the sim live data -- seeded per call).
         self._fk_data = mujoco.MjData(model)
@@ -203,7 +206,7 @@ class PoseDeltaLaw:
             rest_gain=rest_gain,
             max_dq_rad=math.radians(max_dq_deg),
             collision_distance_provider=(
-                collision_distance_provider if collision_aware_ik else None
+                collision_distance_provider if self._collision_aware_ik else None
             ),
             collision_inner_step_rad=self._max_dq_frame_rad,
         )
@@ -719,15 +722,12 @@ class PoseDeltaLaw:
             fraction = 0.5 * (low + high)
             prefix_pos = start_pos + fraction * (target_pos - start_pos)
             prefix_rot = self._interpolate_rotation(start_rot, target_rot, fraction)
-            if self._ik_solver._collision_distance_provider is None:
-                result = self._ik_solver.solve(prefix_pos, prefix_rot, seed)
-            else:
-                result = self._ik_solver.solve(
-                    prefix_pos,
-                    prefix_rot,
-                    seed,
-                    collision_avoidance=False,
-                )
+            result = self._solve_ik(
+                prefix_pos,
+                prefix_rot,
+                seed,
+                allow_collision_avoidance=False,
+            )
             raw = np.asarray(result.qpos, dtype=float)
             valid = bool(
                 np.isfinite(raw).all()
@@ -755,7 +755,31 @@ class PoseDeltaLaw:
                 high = fraction
         return best
 
-    def solve(self, delta_action, qpos_rad, *, stale: bool = False) -> JointSolution:
+    def _solve_ik(
+        self,
+        target_pos: np.ndarray,
+        target_rot: np.ndarray,
+        seed: np.ndarray,
+        *,
+        allow_collision_avoidance: bool,
+    ):
+        if not self._collision_aware_ik:
+            return self._ik_solver.solve(target_pos, target_rot, seed)
+        return self._ik_solver.solve(
+            target_pos,
+            target_rot,
+            seed,
+            collision_avoidance=allow_collision_avoidance,
+        )
+
+    def solve(
+        self,
+        delta_action,
+        qpos_rad,
+        *,
+        stale: bool = False,
+        allow_collision_avoidance: bool = True,
+    ) -> JointSolution:
         """Compose T_target = T_arm_ref @ Δ, solve DLS IK, apply official checks.
 
         Pipeline: validate/stale/workspace -> deterministic multi-seed DLS ->
@@ -950,7 +974,12 @@ class PoseDeltaLaw:
                 last_failure = "ik-deadline"
                 remember_failure(last_failure)
                 break
-            result = self._ik_solver.solve(target_pos, target_rot, seed)
+            result = self._solve_ik(
+                target_pos,
+                target_rot,
+                seed,
+                allow_collision_avoidance=allow_collision_avoidance,
+            )
             raw_solution = np.asarray(result.qpos, dtype=float)
             if not np.isfinite(raw_solution).all():
                 last_failure = "ik-nan"

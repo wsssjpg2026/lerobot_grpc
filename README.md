@@ -197,14 +197,23 @@ Safety includes deterministic multi-seed 6D DLS IK, a 10 mm S1 position
 residual gate, rejection of discontinuous IK branches, a 1.2 rad/s joint target
 rate cap, and an arm-base-local workspace normalized by the 1.084483 m S1 TCP
 reach: `|x|,|y| <= 85%`, `z in [-60%,85%]`, and radius in `[20%,85%]`.
-Every capped path is sampled with no more than 1-degree joint increments and checked in an independent
-MuJoCo collision model.  The selected arm, wrist and coupled fingers are
+Collision-aware IK is enabled by default: all active body/self/floor distance
+constraints contribute a null-space gradient while the 6D hand pose remains
+the primary task. The soft bands are 6% of reach for self/body/floor pairs and
+10% for cross-arm pairs. It never invents a lateral Cartesian detour; when a
+full pose is unsafe it may only publish the furthest safe prefix on the
+operator-requested Cartesian segment. Every capped path is sampled with no
+more than 0.5-degree joint increments and checked in an independent MuJoCo
+collision model.  The selected arm, wrist and coupled fingers are
 checked against the chassis, wheels, column, torso, head, opposite arm and
 floor. Normal pairs enter the safety gate at 5 mm and release at 8 mm;
 cross-arm pairs enter at 10 mm and release at 15 mm. Distance-increasing
 escape motion remains allowed inside the release margin, so the hysteresis
 does not deadlock retreat. This does not change the upstream model's live
-contact masks.
+contact masks. After every reference capture, collision-nullspace motion is
+suppressed for 0.5 seconds so the identity frame is an exact hold. For
+diagnostics, `--no-collision-aware-ik` disables only the soft null-space layer;
+the hard endpoint and swept-path collision gate remains enabled.
 
 The Collection request can apply a bounded translation-only gain. The S1
 example uses `--translation-scale 1.5`, so a 10 mm Pika displacement requests
@@ -224,7 +233,9 @@ it does not write a dataset or provide Collection's hold/re-reference transactio
 `collection_grpc` is the recording/orchestration
 path: it latches follower then leader references, stores the effective 8D
 target in standard `action`, stores the 22D state in `observation.state`, and
-adds compact `safety=[flags, applied_mask]`.  The planned SessionCoordinator
+adds raw `teleop.intent` plus compact
+`safety=[flags, applied_mask, valid]`; collision-clipped/held frames have
+`valid=0`.  The planned SessionCoordinator
 remains the production-facing deep interface for the final orchestration UI.
 
 ### 1. Start the servers (robot-side)

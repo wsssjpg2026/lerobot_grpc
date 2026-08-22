@@ -693,9 +693,12 @@ class MuJoCoS1Servicer(FollowerServicer):
         max_dq_frame_deg: float = 2.291831,
         gripper_max_distance_mm: float = DEFAULT_GRIPPER_MAX_DISTANCE_MM,
         collision_margin_m: float = 0.005,
+        self_soft_distance_ratio: float = 0.06,
+        cross_arm_soft_distance_ratio: float = 0.10,
         stale_timeout_s: float = 0.5,
         torso_home_m: float = 0.6,
-        collision_aware_ik: bool = False,
+        collision_aware_ik: bool = True,
+        reference_grace_s: float = 0.5,
     ) -> None:
         if arm not in ARM_JOINTS:
             raise ValueError(f"arm must be 'left' or 'right', got {arm!r}")
@@ -713,6 +716,11 @@ class MuJoCoS1Servicer(FollowerServicer):
         if stale_timeout_s < 0.0:
             raise ValueError("stale timeout must be non-negative")
         self._stale_timeout_s = float(stale_timeout_s)
+        if reference_grace_s < 0.0:
+            raise ValueError("reference grace must be non-negative")
+        self._collision_aware_ik = bool(collision_aware_ik)
+        self._reference_grace_s = float(reference_grace_s)
+        self._reference_locked_monotonic = time.monotonic()
         self._last_action_monotonic: float | None = None
         self._watchdog_held = False
         self._session_hold_latched = False
@@ -779,6 +787,8 @@ class MuJoCoS1Servicer(FollowerServicer):
             xml_path,
             arm=arm,
             margin_m=collision_margin_m,
+            self_soft_distance_ratio=self_soft_distance_ratio,
+            cross_arm_soft_distance_ratio=cross_arm_soft_distance_ratio,
         )
         self._workspace = S1ArmWorkspace(self._model, arm=arm)
         self._law = PoseDeltaLaw(
@@ -800,6 +810,15 @@ class MuJoCoS1Servicer(FollowerServicer):
             workspace_checker=self._workspace,
         )
         self._law.lock_reference(self._data.qpos.copy())
+        self._reference_locked_monotonic = time.monotonic()
+        logger.info(
+            "S1 collision-aware IK %s: self/cross soft bands=%.1f%%/%.1f%% "
+            "reference grace=%.3fs (hard collision gate always enabled)",
+            "ENABLED" if self._collision_aware_ik else "DISABLED",
+            self_soft_distance_ratio * 100.0,
+            cross_arm_soft_distance_ratio * 100.0,
+            self._reference_grace_s,
+        )
 
         self._viewer = None
         if render:
@@ -875,6 +894,7 @@ class MuJoCoS1Servicer(FollowerServicer):
             self._connected = True
             self._law.reset()
             self._law.lock_reference(self._data.qpos.copy())
+            self._reference_locked_monotonic = time.monotonic()
             self._last_action_monotonic = None
             self._watchdog_held = False
             self._session_hold_latched = False
@@ -983,6 +1003,12 @@ class MuJoCoS1Servicer(FollowerServicer):
                 generic_action,
                 self._data.qpos.copy(),
                 stale=stale,
+                allow_collision_avoidance=bool(
+                    self._collision_aware_ik
+                    and not stale
+                    and now - self._reference_locked_monotonic
+                    >= self._reference_grace_s
+                ),
             )
             self._last_action_monotonic = now
             if solution.stale:
@@ -1091,6 +1117,7 @@ class MuJoCoS1Servicer(FollowerServicer):
     def SetReference(self, request, context):
         with self._lock:
             self._law.lock_reference(self._data.qpos.copy())
+            self._reference_locked_monotonic = time.monotonic()
             self._reference_epoch += 1
         return Empty()
 

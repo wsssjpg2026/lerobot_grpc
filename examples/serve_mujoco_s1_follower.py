@@ -84,6 +84,29 @@ def main() -> None:
         help="Independent collision candidate clearance in mm (default: 5)",
     )
     parser.add_argument(
+        "--self-soft-distance-ratio",
+        type=float,
+        default=0.06,
+        help="Whole-arm/body avoidance band as fraction of S1 reach (default: 0.06)",
+    )
+    parser.add_argument(
+        "--cross-arm-soft-distance-ratio",
+        type=float,
+        default=0.10,
+        help="Cross-arm avoidance band as fraction of S1 reach (default: 0.10)",
+    )
+    parser.add_argument(
+        "--no-collision-aware-ik",
+        action="store_true",
+        help="Disable soft collision-aware IK for diagnostics; hard collision checks remain enabled",
+    )
+    parser.add_argument(
+        "--reference-grace-s",
+        type=float,
+        default=0.5,
+        help="Hold exact reference before soft avoidance may adjust redundancy (default: 0.5)",
+    )
+    parser.add_argument(
         "--stale-timeout-s",
         type=float,
         default=0.5,
@@ -112,6 +135,10 @@ def main() -> None:
         max_dq_deg=args.max_dq_deg,
         max_dq_frame_deg=args.max_dq_frame_deg,
         collision_margin_m=args.collision_margin_mm / 1000.0,
+        self_soft_distance_ratio=args.self_soft_distance_ratio,
+        cross_arm_soft_distance_ratio=args.cross_arm_soft_distance_ratio,
+        collision_aware_ik=not args.no_collision_aware_ik,
+        reference_grace_s=args.reference_grace_s,
         stale_timeout_s=args.stale_timeout_s,
         torso_home_m=args.torso_home_m,
     )
