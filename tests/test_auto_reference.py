@@ -595,6 +595,43 @@ class TestAutoReference:
             feature.tracking_state for feature in rediscovering
         } == {device_pb2.TrackingState.TRACKING_STATE_RECOVERING}
 
+    def test_prolonged_total_optical_silence_restarts_tracker_backend(
+        self, tmp_path
+    ):
+        """A wedged raw monitor must not leave recovery stuck forever.
+
+        The real failure trace had neither decoded events nor raw-light
+        events after the Tracker returned to view.  While the follower is
+        already held, one bounded context rebuild is safer than waiting
+        indefinitely for a raw event that the wedged monitor cannot report.
+        """
+        servicer = _make_leader(
+            tmp_path,
+            auto_reference=True,
+            cumulative_clutch=True,
+        )
+        servicer._tracker_health_enabled = True
+        servicer.Connect(None, None)
+        servicer._compute_action()
+
+        servicer._device.advance_timestamp = False
+        servicer._device.advance_optical_timestamp = False
+        servicer._device.advance_raw_optical_timestamp = False
+        servicer._device.optical_age_s = 0.2
+        servicer._device.raw_optical_age_s = 0.2
+        servicer._device.raw_optical_measurement_count = 0
+        servicer._last_fresh_received_monotonic -= 0.6
+        servicer._decoder_restart_without_raw_after_s = 0.0
+
+        recovering = list(servicer.GetAction(None, None))
+
+        assert servicer._device.restart_tracker_calls == 1
+        assert servicer._reference_required is True
+        assert servicer._clutched is False
+        assert {
+            feature.tracking_state for feature in recovering
+        } == {device_pb2.TrackingState.TRACKING_STATE_RECOVERING}
+
     def test_collection_recovery_stays_confirmable_while_operator_repositions(
         self, tmp_path
     ):
