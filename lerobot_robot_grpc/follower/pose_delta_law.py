@@ -154,6 +154,8 @@ class PoseDeltaLaw:
         candidate_qpos_adapter: Callable[[np.ndarray, float], np.ndarray] | None = None,
         workspace_delta_m: float | None = None,
         workspace_checker: Callable[[np.ndarray, np.ndarray], bool] | None = None,
+        collision_distance_provider=None,
+        collision_aware_ik: bool = False,
     ):
         import mujoco
 
@@ -180,8 +182,8 @@ class PoseDeltaLaw:
         self._max_dq_frame_rad = math.radians(float(max_dq_frame_deg))
         self._home_qpos = np.radians(np.asarray(home_joints_deg, dtype=float))
         self._max_ik_candidates = 5
-        self._ik_deadline_s = 0.010
-        self._path_step_rad = math.radians(1.0)
+        self._ik_deadline_s = 0.015
+        self._path_step_rad = math.radians(0.5)
         self._collision_checker = collision_checker
         self._candidate_qpos_adapter = candidate_qpos_adapter
         self._workspace_delta_m = (
@@ -200,6 +202,10 @@ class PoseDeltaLaw:
             rest_qpos=self._home_qpos,
             rest_gain=rest_gain,
             max_dq_rad=math.radians(max_dq_deg),
+            collision_distance_provider=(
+                collision_distance_provider if collision_aware_ik else None
+            ),
+            collision_inner_step_rad=self._max_dq_frame_rad,
         )
         self._site_id = self._ik_solver.site_id
 
@@ -646,6 +652,109 @@ class PoseDeltaLaw:
             seeds.append(seed)
         return seeds
 
+    @staticmethod
+    def _interpolate_rotation(
+        start_rot: np.ndarray, target_rot: np.ndarray, fraction: float
+    ) -> np.ndarray:
+        """Shortest-axis SO(3) interpolation without an extra dependency."""
+        relative = np.asarray(target_rot) @ np.asarray(start_rot).T
+        cosine = float(np.clip((np.trace(relative) - 1.0) * 0.5, -1.0, 1.0))
+        angle = math.acos(cosine)
+        if angle <= 1e-10:
+            return np.asarray(start_rot, dtype=float).copy()
+        axis = np.array(
+            [
+                relative[2, 1] - relative[1, 2],
+                relative[0, 2] - relative[2, 0],
+                relative[1, 0] - relative[0, 1],
+            ],
+            dtype=float,
+        )
+        sine = math.sin(angle)
+        if abs(sine) <= 1e-10:
+            # The teleoperation frame cap keeps ordinary rotations far from
+            # pi; a stable eigenvector handles the degenerate fallback.
+            values, vectors = np.linalg.eig(relative)
+            axis = np.real(vectors[:, np.argmin(np.abs(values - 1.0))])
+        else:
+            axis /= 2.0 * sine
+        axis /= max(float(np.linalg.norm(axis)), 1e-12)
+        theta = float(fraction) * angle
+        skew = np.array(
+            [
+                [0.0, -axis[2], axis[1]],
+                [axis[2], 0.0, -axis[0]],
+                [-axis[1], axis[0], 0.0],
+            ]
+        )
+        delta = (
+            np.eye(3)
+            + math.sin(theta) * skew
+            + (1.0 - math.cos(theta)) * (skew @ skew)
+        )
+        return delta @ np.asarray(start_rot, dtype=float)
+
+    def _cartesian_prefix_candidate(
+        self,
+        *,
+        qpos_rad: np.ndarray,
+        step_start: np.ndarray,
+        gripper_candidate: np.ndarray,
+        target_pos: np.ndarray,
+        target_rot: np.ndarray,
+        solve_started: float,
+    ):
+        """Find the furthest safe Cartesian prefix within one frame cap."""
+        start_state = np.asarray(gripper_candidate, dtype=float).copy()
+        start_state[list(self._body_dofs)] = step_start
+        start_pose = self._fk(start_state)
+        start_pos = start_pose[:3, 3]
+        start_rot = start_pose[:3, :3]
+        low, high = 0.0, 1.0
+        best = None
+        seed = start_state.copy()
+        for _ in range(8):
+            if time.perf_counter() - solve_started >= self._ik_deadline_s:
+                break
+            fraction = 0.5 * (low + high)
+            prefix_pos = start_pos + fraction * (target_pos - start_pos)
+            prefix_rot = self._interpolate_rotation(start_rot, target_rot, fraction)
+            if self._ik_solver._collision_distance_provider is None:
+                result = self._ik_solver.solve(prefix_pos, prefix_rot, seed)
+            else:
+                result = self._ik_solver.solve(
+                    prefix_pos,
+                    prefix_rot,
+                    seed,
+                    collision_avoidance=False,
+                )
+            raw = np.asarray(result.qpos, dtype=float)
+            valid = bool(
+                np.isfinite(raw).all()
+                and float(result.pos_err) <= 0.005
+                and float(result.rot_err) <= math.radians(3.0)
+                and float(np.abs(raw - step_start).max())
+                <= self._max_dq_frame_rad + 1e-12
+            )
+            if valid and self._last_solved is not None:
+                valid = bool(
+                    float(np.abs(raw - self._last_solved).max())
+                    <= self._jump_reset_rad
+                )
+            probe = gripper_candidate.copy()
+            probe[list(self._body_dofs)] = raw
+            if valid:
+                valid = not self._candidate_collides(
+                    probe, escape_from=qpos_rad
+                ) and not self._path_collides(qpos_rad, probe)
+            if valid:
+                best = result, raw
+                low = fraction
+                seed[list(self._body_dofs)] = raw
+            else:
+                high = fraction
+        return best
+
     def solve(self, delta_action, qpos_rad, *, stale: bool = False) -> JointSolution:
         """Compose T_target = T_arm_ref @ Δ, solve DLS IK, apply official checks.
 
@@ -832,7 +941,8 @@ class PoseDeltaLaw:
             )
 
         checker_failed = False
-        for seed_index, seed in enumerate(self._candidate_seeds(qpos_rad)):
+        collision_endpoint_seen = False
+        for seed_index, seed in enumerate(self._candidate_seeds(gripper_candidate)):
             if (
                 seed_index > 0
                 and time.perf_counter() - solve_started >= self._ik_deadline_s
@@ -882,6 +992,7 @@ class PoseDeltaLaw:
                     last_failure = "collision"
                     remember_failure(last_failure, result)
                     target_collided = True
+                    collision_endpoint_seen = True
             except Exception:
                 logger.exception("Collision checker failed closed")
                 checker_failed = True
@@ -899,15 +1010,8 @@ class PoseDeltaLaw:
             collision_clipped = False
             try:
                 if target_collided:
-                    safe_probe = self._last_safe_path_state(qpos_rad, step_probe)
-                    if safe_probe is None:
-                        continue
-                    collision_clipped = not np.allclose(
-                        safe_probe, step_probe, rtol=0.0, atol=1e-12
-                    )
-                    step_probe = safe_probe
-                    step_solution = safe_probe[list(self._body_dofs)].copy()
-                elif self._path_collides(qpos_rad, step_probe):
+                    continue
+                if self._path_collides(qpos_rad, step_probe):
                     last_failure = "collision-path"
                     remember_failure(last_failure, result)
                     continue
@@ -949,6 +1053,48 @@ class PoseDeltaLaw:
                 and float(result.pos_err) <= 0.010
             ):
                 break
+
+        if not candidates and collision_endpoint_seen and not checker_failed:
+            try:
+                prefix = self._cartesian_prefix_candidate(
+                    qpos_rad=qpos_rad,
+                    step_start=step_start,
+                    gripper_candidate=gripper_candidate,
+                    target_pos=target_pos,
+                    target_rot=target_rot,
+                    solve_started=solve_started,
+                )
+            except Exception:
+                logger.exception("Cartesian collision-prefix solve failed closed")
+                prefix = None
+                checker_failed = True
+                last_failure = "checker-error"
+                remember_failure(last_failure)
+            if prefix is not None:
+                result, prefix_solution = prefix
+                normalized_distance = float(
+                    np.linalg.norm(prefix_solution - measured_arm)
+                    / max(len(prefix_solution), 1)
+                )
+                candidates.append(
+                    (
+                        (
+                            True,
+                            False,
+                            float(result.pos_err),
+                            self._rot_weight * float(result.rot_err),
+                            normalized_distance,
+                            -float(result.manipulability),
+                            self._max_ik_candidates,
+                        ),
+                        result,
+                        prefix_solution,
+                        prefix_solution,
+                        False,
+                        True,
+                        True,
+                    )
+                )
 
         if not candidates:
             self._warm_seed = None

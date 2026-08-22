@@ -26,6 +26,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .collision_distance import CollisionConstraint, CollisionDistanceProvider
+
 logger = logging.getLogger(__name__)
 
 _ROT_WEIGHT_EPS = 1e-8
@@ -41,6 +43,7 @@ class IKSolveResult:
     manipulability: float
     achieved_pos: np.ndarray
     achieved_rot: np.ndarray
+    avoidance_active: bool = False
 
 
 class DLSIKSolver:
@@ -99,6 +102,11 @@ class DLSIKSolver:
         adaptive_damping: float = 0.0,
         max_dq_rad: float = 0.105,  # ~6°
         qpos_lo_override: np.ndarray | None = None,
+        collision_distance_provider: CollisionDistanceProvider | None = None,
+        collision_outer_step_rad: float = np.radians(0.5),
+        collision_inner_step_rad: float = np.radians(2.291831),
+        collision_pos_tolerance_m: float = 0.005,
+        collision_rot_tolerance_rad: float = np.radians(3.0),
     ):
         import mujoco
 
@@ -119,6 +127,11 @@ class DLSIKSolver:
         self._rest_gain = float(rest_gain)
         self._adaptive_damping = float(adaptive_damping)
         self._max_dq_rad = float(max_dq_rad)
+        self._collision_distance_provider = collision_distance_provider
+        self._collision_outer_step_rad = float(collision_outer_step_rad)
+        self._collision_inner_step_rad = float(collision_inner_step_rad)
+        self._collision_pos_tolerance_m = float(collision_pos_tolerance_m)
+        self._collision_rot_tolerance_rad = float(collision_rot_tolerance_rad)
 
         # Pre-extract joint limits for the solved DOFs
         self._qpos_lo = np.array([model.jnt_range[d, 0] for d in body_dofs])
@@ -141,6 +154,109 @@ class DLSIKSolver:
             "rest_gain=%.3f adaptive_damping=%.3f max_iters=%d",
             site_name, body_dofs, damping, rot_weight, rest_gain, adaptive_damping, max_iters,
         )
+
+    @staticmethod
+    def _collision_barrier(
+        constraints: tuple[CollisionConstraint, ...],
+    ) -> float:
+        cost = 0.0
+        for item in constraints:
+            span = max(
+                item.activation_distance_m - item.minimum_distance_m,
+                1e-9,
+            )
+            urgency = np.clip(
+                (item.activation_distance_m - item.distance_m) / span,
+                0.0,
+                1.0,
+            )
+            cost += float(urgency * urgency)
+        return cost
+
+    def _apply_collision_avoidance(
+        self,
+        *,
+        target_pos: np.ndarray,
+        target_rot: np.ndarray,
+        task_jacobian: np.ndarray,
+        damping: float,
+    ) -> bool:
+        provider = self._collision_distance_provider
+        if provider is None:
+            return False
+        constraints = provider.active_constraints(self._ik_data.qpos.copy())
+        if not constraints:
+            return False
+
+        direction = np.zeros(len(self._body_dofs), dtype=float)
+        max_urgency = 0.0
+        for item in constraints:
+            gradient = np.asarray(item.gradient, dtype=float)
+            if gradient.shape != direction.shape:
+                raise ValueError(
+                    "collision gradient shape "
+                    f"{gradient.shape} != controlled joints {direction.shape}"
+                )
+            norm = float(np.linalg.norm(gradient))
+            if norm <= 1e-12:
+                continue
+            span = max(
+                item.activation_distance_m - item.minimum_distance_m,
+                1e-9,
+            )
+            urgency = float(
+                np.clip(
+                    (item.activation_distance_m - item.distance_m) / span,
+                    0.0,
+                    1.0,
+                )
+            )
+            max_urgency = max(max_urgency, urgency)
+            direction += urgency * urgency * gradient / norm
+        if float(np.linalg.norm(direction)) <= 1e-12:
+            return False
+
+        jj_t = task_jacobian @ task_jacobian.T + damping**2 * np.eye(
+            task_jacobian.shape[0]
+        )
+        j_hash = task_jacobian.T @ np.linalg.solve(jj_t, np.eye(jj_t.shape[0]))
+        null_projector = np.eye(len(self._body_dofs)) - j_hash @ task_jacobian
+        step = null_projector @ direction
+        max_component = float(np.abs(step).max())
+        if max_component <= 1e-12:
+            return False
+        allowed_step = self._collision_outer_step_rad + (
+            self._collision_inner_step_rad - self._collision_outer_step_rad
+        ) * max_urgency * max_urgency
+        step *= allowed_step / max_component
+
+        baseline_q = self._ik_data.qpos[self._body_dofs].copy()
+        baseline_cost = self._collision_barrier(constraints)
+        for scale in (1.0, 0.5, 0.25):
+            candidate = baseline_q + scale * step
+            np.clip(candidate, self._qpos_lo, self._qpos_hi, out=candidate)
+            self._ik_data.qpos[self._body_dofs] = candidate
+            self._mj.mj_forward(self._model, self._ik_data)
+            achieved_pos = self._ik_data.site_xpos[self._site_id]
+            achieved_rot = self._ik_data.site_xmat[self._site_id].reshape(3, 3)
+            pos_err = float(np.linalg.norm(target_pos - achieved_pos))
+            rot_err = float(
+                np.linalg.norm(self._rotation_error(target_rot, achieved_rot))
+            )
+            if (
+                pos_err > self._collision_pos_tolerance_m
+                or rot_err > self._collision_rot_tolerance_rad
+            ):
+                continue
+            candidate_constraints = provider.active_constraints(
+                self._ik_data.qpos.copy()
+            )
+            if self._collision_barrier(candidate_constraints) < baseline_cost - 1e-9:
+                return True
+
+        self._ik_data.qpos[self._body_dofs] = baseline_q
+        self._mj.mj_forward(self._model, self._ik_data)
+        return False
 
     def set_qpos_limits(self, lo: np.ndarray, hi: np.ndarray) -> None:
         """Tightens the solved-DOF limits toward the given (lo, hi) radians.
@@ -195,6 +311,7 @@ class DLSIKSolver:
         seed_qpos: np.ndarray,
         rot_weight: float | None = None,
         rest_gain: float | None = None,
+        collision_avoidance: bool = True,
     ) -> IKSolveResult:
         """Solve IK for a target EE pose.
 
@@ -313,6 +430,26 @@ class DLSIKSolver:
             np.clip(cur, self._qpos_lo, self._qpos_hi, out=cur)
             self._ik_data.qpos[self._body_dofs] = cur
 
+        # Collision avoidance is also a post-primary null-space task.  The
+        # provider hides robot-specific geometry; this solver only consumes
+        # signed distances and controlled-joint gradients.
+        self._mj.mj_forward(self._model, self._ik_data)
+        jacp = np.zeros((3, nv))
+        jacr = np.zeros((3, nv))
+        self._mj.mj_jacSite(self._model, self._ik_data, jacp, jacr, self._site_id)
+        Jp = jacp[:, self._body_dofs]
+        Jr = jacr[:, self._body_dofs]
+        if use_rot:
+            task_jacobian = np.vstack([Jp, rw * Jr])
+        else:
+            task_jacobian = Jp
+        avoidance_active = bool(collision_avoidance) and self._apply_collision_avoidance(
+            target_pos=target_pos,
+            target_rot=target_rot,
+            task_jacobian=task_jacobian,
+            damping=lam if "lam" in locals() else self._damping,
+        )
+
         self._mj.mj_forward(self._model, self._ik_data)
         achieved_pos = self._ik_data.site_xpos[self._site_id].copy()
         achieved_rot = self._ik_data.site_xmat[self._site_id].reshape(3, 3).copy()
@@ -325,4 +462,5 @@ class DLSIKSolver:
             manipulability=last_w,
             achieved_pos=achieved_pos,
             achieved_rot=achieved_rot,
+            avoidance_active=avoidance_active,
         )

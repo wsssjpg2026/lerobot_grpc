@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import numpy as np
@@ -370,6 +371,239 @@ def test_s1_distance_provider_uses_the_larger_cross_arm_soft_band():
     assert min(item.distance_m for item in cross_arm) < 0.015
 
 
+def test_collision_aware_ik_increases_clearance_while_preserving_the_tcp_pose():
+    servicer = MuJoCoS1Servicer(
+        xml_path=str(S1_XML),
+        arm="left",
+        render=False,
+        collision_aware_ik=True,
+        stale_timeout_s=10.0,
+    )
+    body_dofs = [
+        servicer._qpos_by_joint[name] for name in ARM_JOINTS["left"]
+    ]
+    qpos = servicer._data.qpos.copy()
+    qpos[body_dofs] = np.radians(
+        [39.4, -110.9, -39.5, -96.9, -1.7, -26.2, -9.3]
+    )
+    servicer._law.lock_reference(qpos)
+    before_pose = servicer._law._fk(qpos)
+    before = next(
+        item
+        for item in servicer._collision_checker.active_constraints(qpos)
+        if (item.body_a, item.body_b)
+        == ("left_arm_link2", "torso_base_link")
+    )
+
+    solution = servicer._law.solve(
+        {
+            "hand.delta_pos.x": 0.0,
+            "hand.delta_pos.y": 0.0,
+            "hand.delta_pos.z": 0.0,
+            "hand.delta_rot.qx": 0.0,
+            "hand.delta_rot.qy": 0.0,
+            "hand.delta_rot.qz": 0.0,
+            "hand.delta_rot.qw": 1.0,
+            "gripper.distance": 60.0,
+        },
+        qpos,
+    )
+    candidate = qpos.copy()
+    candidate[body_dofs] = np.radians(
+        [
+            solution.joint_action[f"{name}.pos"]
+            for name in ARM_JOINTS["left"]
+        ]
+    )
+    after = next(
+        item
+        for item in servicer._collision_checker.active_constraints(candidate)
+        if (item.body_a, item.body_b)
+        == ("left_arm_link2", "torso_base_link")
+    )
+    after_pose = servicer._law._fk(candidate)
+
+    assert not solution.held
+    assert after.distance_m > before.distance_m + 1e-5
+    assert np.linalg.norm(after_pose[:3, 3] - before_pose[:3, 3]) <= 0.005
+    relative = before_pose[:3, :3].T @ after_pose[:3, :3]
+    angle = np.arccos(np.clip((np.trace(relative) - 1.0) / 2.0, -1.0, 1.0))
+    assert angle <= np.radians(3.0)
+    assert float(np.abs(candidate[body_dofs] - qpos[body_dofs]).max()) <= np.radians(
+        2.291831
+    ) + 1e-9
+
+
+def test_collision_aware_ik_converges_without_fixed_target_joint_oscillation():
+    servicer = MuJoCoS1Servicer(
+        xml_path=str(S1_XML),
+        arm="left",
+        render=False,
+        collision_aware_ik=True,
+        stale_timeout_s=10.0,
+    )
+    body_dofs = [
+        servicer._qpos_by_joint[name] for name in ARM_JOINTS["left"]
+    ]
+    qpos = servicer._data.qpos.copy()
+    qpos[body_dofs] = np.radians(
+        [39.4, -110.9, -39.5, -96.9, -1.7, -26.2, -9.3]
+    )
+    servicer._law.lock_reference(qpos)
+    command = {
+        "hand.delta_pos.x": 0.0,
+        "hand.delta_pos.y": 0.0,
+        "hand.delta_pos.z": 0.0,
+        "hand.delta_rot.qx": 0.0,
+        "hand.delta_rot.qy": 0.0,
+        "hand.delta_rot.qz": 0.0,
+        "hand.delta_rot.qw": 1.0,
+        "gripper.distance": 60.0,
+    }
+
+    targets = []
+    barrier_costs = []
+    for _ in range(80):
+        solution = servicer._law.solve(command, qpos)
+        assert not solution.held
+        qpos[body_dofs] = np.radians(
+            [
+                solution.joint_action[f"{name}.pos"]
+                for name in ARM_JOINTS["left"]
+            ]
+        )
+        targets.append(qpos[body_dofs].copy())
+        constraints = servicer._collision_checker.active_constraints(qpos)
+        barrier_costs.append(
+            sum(
+                np.clip(
+                    (item.activation_distance_m - item.distance_m)
+                    / (item.activation_distance_m - item.minimum_distance_m),
+                    0.0,
+                    1.0,
+                )
+                ** 2
+                for item in constraints
+            )
+        )
+
+    assert barrier_costs[-1] < 0.8 * barrier_costs[0]
+    tail = np.asarray(targets[-10:])
+    assert float(np.ptp(tail, axis=0).max()) < np.radians(0.02)
+
+
+def test_collision_aware_ik_routes_the_whole_arm_around_the_torso_boundary():
+    """The captured live target should not become a permanent hard-gate hold."""
+    servicer = MuJoCoS1Servicer(
+        xml_path=str(S1_XML),
+        arm="left",
+        render=False,
+        torso_home_m=0.6,
+        collision_aware_ik=True,
+        stale_timeout_s=10.0,
+    )
+    body_dofs = [
+        servicer._qpos_by_joint[name] for name in ARM_JOINTS["left"]
+    ]
+    qpos = servicer._data.qpos.copy()
+    qpos[body_dofs] = np.radians(
+        [62.1, -108.8, -6.5, -112.9, 9.5, -21.6, -30.3]
+    )
+    servicer._law.lock_reference(qpos)
+    command = {
+        "hand.delta_pos.x": -0.04868578443587338,
+        "hand.delta_pos.y": -0.0384126000770656,
+        "hand.delta_pos.z": -0.04315918889128535,
+        "hand.delta_rot.qx": 0.026754698286012266,
+        "hand.delta_rot.qy": 0.008380012753899059,
+        "hand.delta_rot.qz": 0.010672686999462904,
+        "hand.delta_rot.qw": 0.9995499263458931,
+        "gripper.distance": 60.0,
+    }
+
+    held = 0
+    for _ in range(60):
+        solution = servicer._law.solve(command, qpos)
+        held += int(solution.held)
+        qpos[body_dofs] = np.radians(
+            [
+                solution.joint_action[f"{name}.pos"]
+                for name in ARM_JOINTS["left"]
+            ]
+        )
+
+    torso = next(
+        item
+        for item in servicer._collision_checker.active_constraints(qpos)
+        if (item.body_a, item.body_b)
+        == ("left_arm_link2", "torso_base_link")
+    )
+    assert held == 0
+    assert torso.distance_m > 0.010
+    assert not servicer._collision_checker.check(qpos).collided
+
+
+def test_collision_aware_ik_meets_the_30hz_compute_budget():
+    servicer = MuJoCoS1Servicer(
+        xml_path=str(S1_XML),
+        arm="left",
+        render=False,
+        collision_aware_ik=True,
+        stale_timeout_s=10.0,
+    )
+    body_dofs = [
+        servicer._qpos_by_joint[name] for name in ARM_JOINTS["left"]
+    ]
+    qpos = servicer._data.qpos.copy()
+    servicer._law.lock_reference(qpos)
+    identity = {
+        "hand.delta_pos.x": 0.0,
+        "hand.delta_pos.y": 0.0,
+        "hand.delta_pos.z": 0.0,
+        "hand.delta_rot.qx": 0.0,
+        "hand.delta_rot.qy": 0.0,
+        "hand.delta_rot.qz": 0.0,
+        "hand.delta_rot.qw": 1.0,
+        "gripper.distance": 60.0,
+    }
+    elapsed = []
+    for frame in range(160):
+        started = time.perf_counter()
+        solution = servicer._law.solve(identity, qpos)
+        duration = time.perf_counter() - started
+        qpos[body_dofs] = np.radians(
+            [
+                solution.joint_action[f"{name}.pos"]
+                for name in ARM_JOINTS["left"]
+            ]
+        )
+        if frame >= 40:
+            elapsed.append(duration)
+    assert np.percentile(elapsed, 95) <= 0.005
+
+    qpos = servicer._data.qpos.copy()
+    qpos[body_dofs] = np.radians(
+        [62.1, -108.8, -6.5, -112.9, 9.5, -21.6, -30.3]
+    )
+    servicer._law.lock_reference(qpos)
+    collision_target = {
+        "hand.delta_pos.x": -0.04868578443587338,
+        "hand.delta_pos.y": -0.0384126000770656,
+        "hand.delta_pos.z": -0.04315918889128535,
+        "hand.delta_rot.qx": 0.026754698286012266,
+        "hand.delta_rot.qy": 0.008380012753899059,
+        "hand.delta_rot.qz": 0.010672686999462904,
+        "hand.delta_rot.qw": 0.9995499263458931,
+        "gripper.distance": 60.0,
+    }
+    elapsed = []
+    for _ in range(40):
+        started = time.perf_counter()
+        servicer._law.solve(collision_target, qpos)
+        elapsed.append(time.perf_counter() - started)
+    assert np.percentile(elapsed, 99) <= 0.020
+
+
 def test_arm_base_workspace_uses_normalized_local_coordinates():
     servicer = MuJoCoS1Servicer(xml_path=str(S1_XML), arm="left", render=False)
     workspace = S1ArmWorkspace(servicer._model, arm="left")
@@ -629,6 +863,22 @@ def test_near_torso_target_advances_to_a_safe_collision_prefix():
     )
     assert float(np.abs(sent - start).max()) > np.radians(0.05)
     assert not servicer._collision_checker.check(published).collided
+    start_position = servicer._law._fk(qpos)[:3, 3]
+    sent_position = servicer._law._fk(published)[:3, 3]
+    requested_offset = servicer._law.arm_reference[:3, :3] @ np.array(
+        [
+            command["hand.delta_pos.x"],
+            command["hand.delta_pos.y"],
+            command["hand.delta_pos.z"],
+        ]
+    )
+    fraction = float(
+        np.dot(sent_position - start_position, requested_offset)
+        / np.dot(requested_offset, requested_offset)
+    )
+    line_position = start_position + np.clip(fraction, 0.0, 1.0) * requested_offset
+    assert 0.0 < fraction < 1.0
+    assert np.linalg.norm(sent_position - line_position) <= 0.005
 
 
 def test_first_action_after_a_stale_gap_is_discarded_and_holds():

@@ -199,12 +199,13 @@ class S1CollisionChecker:
             raise ValueError(
                 "cross-arm soft distance must cover the hard release margin"
             )
-        # Generate predictive contacts throughout the soft band.  Hard checks
-        # below still filter these contacts back to their millimetre thresholds.
-        moving_margin = self._self_soft_distance_m / 2.0
-        fixed_margin = self._self_soft_distance_m - moving_margin
+        # The hard model only generates millimetre-range contacts.  A private
+        # soft copy below uses the larger predictive band so swept-path checks
+        # do not repeatedly pay the soft broad-phase cost.
+        moving_margin = self._release_margin_m / 2.0
+        fixed_margin = self._release_margin_m - moving_margin
         opposite_margin = max(
-            self._cross_soft_distance_m - moving_margin,
+            self._cross_release_margin_m - moving_margin,
             fixed_margin,
         )
         selected_count = 0
@@ -283,8 +284,30 @@ class S1CollisionChecker:
         selected_count += 1
 
         self._mj = mujoco
+        soft_spec = spec.copy()
+        soft_moving_margin = self._self_soft_distance_m / 2.0
+        soft_fixed_margin = self._self_soft_distance_m - soft_moving_margin
+        soft_opposite_margin = max(
+            self._cross_soft_distance_m - soft_moving_margin,
+            soft_fixed_margin,
+        )
+        for geom in soft_spec.geoms:
+            body_name = geom.parent.name
+            if int(geom.contype) == 1:
+                geom.margin = soft_moving_margin
+            elif (
+                int(geom.contype) == 2
+                and _arm_collision_link(body_name, opposite) is not None
+            ):
+                geom.margin = soft_opposite_margin
+            elif int(geom.contype) == 2:
+                geom.margin = soft_fixed_margin
+            else:
+                geom.margin = 0.0
         self._model = spec.compile()
         self._data = mujoco.MjData(self._model)
+        self._soft_model = soft_spec.compile()
+        self._soft_data = mujoco.MjData(self._soft_model)
         self._arm = arm
         self._opposite = opposite
         self._controlled_dofs = np.asarray(
@@ -346,16 +369,16 @@ class S1CollisionChecker:
         the most severe constraint.
         """
         qpos = np.asarray(qpos_rad, dtype=float)
-        if qpos.shape != (self._model.nq,):
+        if qpos.shape != (self._soft_model.nq,):
             raise ValueError(
-                f"expected S1 qpos shape {(self._model.nq,)}, got {qpos.shape}"
+                f"expected S1 qpos shape {(self._soft_model.nq,)}, got {qpos.shape}"
             )
-        self._data.qpos[:] = qpos
-        self._mj.mj_forward(self._model, self._data)
+        self._soft_data.qpos[:] = qpos
+        self._mj.mj_forward(self._soft_model, self._soft_data)
         active: dict[tuple[str, str], CollisionConstraint] = {}
-        nv = self._model.nv
-        for contact_id in range(self._data.ncon):
-            contact = self._data.contact[contact_id]
+        nv = self._soft_model.nv
+        for contact_id in range(self._soft_data.ncon):
+            contact = self._soft_data.contact[contact_id]
             oriented = self._oriented_semantic_pair(
                 int(contact.geom1), int(contact.geom2)
             )
@@ -370,8 +393,8 @@ class S1CollisionChecker:
             fromto = np.zeros(6, dtype=float)
             distance = float(
                 self._mj.mj_geomDistance(
-                    self._model,
-                    self._data,
+                    self._soft_model,
+                    self._soft_data,
                     geom_a,
                     geom_b,
                     activation + 1e-9,
@@ -392,13 +415,23 @@ class S1CollisionChecker:
                     normal = -normal
             jac_a = np.zeros((3, nv), dtype=float)
             jac_b = np.zeros((3, nv), dtype=float)
-            body_a_id = int(self._model.geom_bodyid[geom_a])
-            body_b_id = int(self._model.geom_bodyid[geom_b])
+            body_a_id = int(self._soft_model.geom_bodyid[geom_a])
+            body_b_id = int(self._soft_model.geom_bodyid[geom_b])
             self._mj.mj_jac(
-                self._model, self._data, jac_a, None, fromto[:3], body_a_id
+                self._soft_model,
+                self._soft_data,
+                jac_a,
+                None,
+                fromto[:3],
+                body_a_id,
             )
             self._mj.mj_jac(
-                self._model, self._data, jac_b, None, fromto[3:], body_b_id
+                self._soft_model,
+                self._soft_data,
+                jac_b,
+                None,
+                fromto[3:],
+                body_b_id,
             )
             gradient = normal @ (jac_b - jac_a)
             minimum = self._hard_entry_distance(moving_link, body_b, cross_arm)
@@ -662,6 +695,7 @@ class MuJoCoS1Servicer(FollowerServicer):
         collision_margin_m: float = 0.005,
         stale_timeout_s: float = 0.5,
         torso_home_m: float = 0.6,
+        collision_aware_ik: bool = False,
     ) -> None:
         if arm not in ARM_JOINTS:
             raise ValueError(f"arm must be 'left' or 'right', got {arm!r}")
@@ -760,6 +794,8 @@ class MuJoCoS1Servicer(FollowerServicer):
             max_dq_frame_deg=max_dq_frame_deg,
             gripper_max_distance_mm=gripper_max_distance_mm,
             collision_checker=self._collision_checker,
+            collision_distance_provider=self._collision_checker,
+            collision_aware_ik=collision_aware_ik,
             candidate_qpos_adapter=self._with_gripper_candidate,
             workspace_checker=self._workspace,
         )
