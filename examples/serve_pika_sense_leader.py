@@ -73,35 +73,6 @@ def main():
         help="Resume from the frozen target after clutch repositioning without "
         "requiring client SetReference calls (recommended for lerobot-teleoperate)",
     )
-    parser.add_argument(
-        "--tracker-ready-timeout-s",
-        type=float,
-        default=110.0,
-        help="Fail Connect unless tracking settles and is confirmed in this time (default: 110)",
-    )
-    parser.add_argument(
-        "--tracker-min-soak-s",
-        type=float,
-        default=10.0,
-        help="Minimum solver soak after the first fresh pose (default: 10)",
-    )
-    parser.add_argument(
-        "--tracker-position-spread-mm",
-        type=float,
-        default=2.0,
-        help="Maximum position spread in the one-second ready window (default: 2mm)",
-    )
-    parser.add_argument(
-        "--tracker-rotation-spread-deg",
-        type=float,
-        default=1.0,
-        help="Maximum rotation spread in the ready window (default: 1deg)",
-    )
-    parser.add_argument(
-        "--no-start-confirmation",
-        action="store_true",
-        help="With --auto-reference, auto-latch after stability without a Pika quick-squeeze confirmation. Collection clients omit --auto-reference and own confirmation themselves.",
-    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -118,11 +89,6 @@ def main():
         auto_reference=args.auto_reference,
         arm_prefix=args.arm_prefix,
         cumulative_clutch=args.cumulative_clutch,
-        tracker_ready_timeout_s=args.tracker_ready_timeout_s,
-        tracker_min_soak_s=args.tracker_min_soak_s,
-        tracker_position_spread_m=args.tracker_position_spread_mm / 1000.0,
-        tracker_rotation_spread_deg=args.tracker_rotation_spread_deg,
-        require_start_confirmation=not args.no_start_confirmation,
     )
     server = LeaderServer(LeaderServerConfig(address=args.address), servicer)
     server.start()

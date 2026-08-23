@@ -18,10 +18,12 @@ orientation, not the room axes.  The calibration file is still loaded/saved
 compatibility but unused.
 
 Robot geometry and IK safety remain follower-side.  Sensor correctness stays
-at this leader boundary: Connect waits for distinct timestamped poses to soak
-and settle, runtime cached/implausible poses freeze publication and require a
-stable re-reference, and action-frame quality is propagated to collection.
-The quick-gripper-squeeze command-state edge also supplies the clutch freeze.
+at this leader boundary: Connect only establishes hardware, while
+GetTrackingReadiness turns SDK context/global-scene/Lighthouse facts and
+distinct optical samples into a tokenized READY lease. Runtime
+cached/implausible poses freeze publication and require a stable
+re-reference, and action-frame quality is propagated to collection. The
+quick-gripper-squeeze command-state edge also supplies the clutch freeze.
 
 The Pika SDK (``pika.sense.Sense``) is imported lazily inside ``__init__`` so
 the module imports cleanly on machines without the SDK — only construction
@@ -275,13 +277,8 @@ class PikaSenseServicer(LeaderServicer):
         device_id: str = "pika_sense",
         arm_prefix: str | None = None,
         cumulative_clutch: bool = False,
-        tracker_ready_timeout_s: float = 110.0,
-        tracker_min_soak_s: float = 10.0,
-        tracker_stable_window_s: float = 1.0,
-        tracker_stable_samples: int = 30,
         tracker_position_spread_m: float = 0.002,
         tracker_rotation_spread_deg: float = 1.0,
-        require_start_confirmation: bool = True,
         tracker_recheck_window_s: float = 0.3,
         tracker_recheck_samples: int = 10,
         tracker_reference_timeout_s: float = 5.0,
@@ -327,23 +324,14 @@ class PikaSenseServicer(LeaderServicer):
         # client SetReference, for clients without an alignment step.
         self._auto_reference = bool(auto_reference)
         self._cumulative_clutch = bool(cumulative_clutch)
-        if tracker_ready_timeout_s <= 0.0:
-            raise ValueError("tracker_ready_timeout_s must be positive")
-        if tracker_min_soak_s < 0.0 or tracker_stable_window_s < 0.0:
-            raise ValueError("tracker soak/window durations must be non-negative")
-        if tracker_stable_samples < 1 or tracker_recheck_samples < 1:
-            raise ValueError("tracker stable/recheck sample counts must be positive")
+        if tracker_recheck_samples < 1:
+            raise ValueError("tracker recheck sample count must be positive")
         if tracker_position_spread_m < 0.0 or tracker_rotation_spread_deg < 0.0:
             raise ValueError("tracker stability spreads must be non-negative")
-        self._tracker_ready_timeout_s = float(tracker_ready_timeout_s)
-        self._tracker_min_soak_s = float(tracker_min_soak_s)
-        self._tracker_stable_window_s = float(tracker_stable_window_s)
-        self._tracker_stable_samples = int(tracker_stable_samples)
         self._tracker_position_spread_m = float(tracker_position_spread_m)
         self._tracker_rotation_spread_rad = float(
             np.radians(tracker_rotation_spread_deg)
         )
-        self._require_start_confirmation = bool(require_start_confirmation)
         self._tracker_recheck_window_s = float(tracker_recheck_window_s)
         self._tracker_recheck_samples = int(tracker_recheck_samples)
         if tracker_reference_timeout_s <= 0.0:
@@ -733,19 +721,6 @@ class PikaSenseServicer(LeaderServicer):
         )
         return rotation_spread <= rotation_limit
 
-    @staticmethod
-    def _sample_window_ready(
-        samples: deque[TrackerSample],
-        *,
-        min_samples: int,
-        min_window_s: float,
-    ) -> bool:
-        return len(samples) >= min_samples and (
-            samples[-1].received_monotonic_s
-            - samples[0].received_monotonic_s
-            >= min_window_s
-        )
-
     def _optical_health_reason(self, sample: TrackerSample) -> str | None:
         if sample.optical_age_s > self._tracker_stale_s:
             return f"optical age {sample.optical_age_s * 1000.0:.0f}ms"
@@ -863,156 +838,6 @@ class PikaSenseServicer(LeaderServicer):
     @staticmethod
     def _context_active(context) -> bool:
         return context is None or not hasattr(context, "is_active") or context.is_active()
-
-    def _await_tracker_ready(self, context) -> TrackerSample:
-        """Block Connect until optical samples settle and the operator confirms.
-
-        Only distinct lighthouse timestamps with enough recent optical
-        measurements count.  Fused IMU timestamps deliberately do not count.
-        """
-        deadline = time.monotonic() + self._tracker_ready_timeout_s
-        first_fresh_monotonic: float | None = None
-        last_optical_timestamp: float | None = None
-        samples: deque[TrackerSample] = deque()
-        phase = "settling"
-        confirmation_state: int | None = None
-        last_progress = 0.0
-
-        logger.info("TRACKER READY: discovering and waiting for fresh pose samples...")
-        while time.monotonic() < deadline and self._context_active(context):
-            sample = self._read_tracker_sample()
-            now = time.monotonic()
-            if sample is None:
-                time.sleep(0.01)
-                continue
-            health_reason = self._optical_health_reason(sample)
-            if (
-                health_reason is not None
-                or sample.optical_timestamp_s == last_optical_timestamp
-            ):
-                if health_reason is not None and now - last_progress >= 1.0:
-                    last_progress = now
-                    logger.info("TRACKER READY: waiting for optical support (%s)", health_reason)
-                time.sleep(0.01)
-                continue
-            last_optical_timestamp = sample.optical_timestamp_s
-            if first_fresh_monotonic is None:
-                first_fresh_monotonic = now
-                logger.info(
-                    "TRACKER READY: first fresh pose; starting %.1fs optical-"
-                    "health soak (this is not a global-fit convergence proof).",
-                    self._tracker_min_soak_s,
-                )
-
-            samples.append(sample)
-            keep_window_s = max(
-                self._tracker_stable_window_s,
-                self._tracker_recheck_window_s,
-            )
-            while (
-                len(samples) > 1
-                and samples[-1].received_monotonic_s
-                - samples[0].received_monotonic_s
-                > keep_window_s * 1.5 + 0.1
-            ):
-                samples.popleft()
-
-            if now - last_progress >= 1.0:
-                last_progress = now
-                soak_elapsed = now - first_fresh_monotonic
-                logger.info(
-                    "TRACKER READY: phase=%s fresh_samples=%d optical_soak=%.1f/%.1fs",
-                    phase,
-                    len(samples),
-                    soak_elapsed,
-                    self._tracker_min_soak_s,
-                )
-
-            if phase == "settling":
-                soaked = now - first_fresh_monotonic >= self._tracker_min_soak_s
-                window_ready = self._sample_window_ready(
-                    samples,
-                    min_samples=self._tracker_stable_samples,
-                    min_window_s=self._tracker_stable_window_s,
-                )
-                if not soaked or not window_ready:
-                    continue
-                # Collection owns the later alignment/Enter flow.  At Connect
-                # it only needs evidence that lighthouse tracking is healthy;
-                # requiring the operator's hand to be motionless here
-                # incorrectly conflates physical motion with solver health.
-                if not self._auto_reference:
-                    self._prime_runtime_tracker(sample)
-                    logger.info(
-                        "TRACKER READY: optical stream health accepted; global-fit "
-                        "error is unavailable from the Pika SDK, and pose may move "
-                        "until collection alignment."
-                    )
-                    return sample
-                if not self._samples_are_stable(
-                    samples,
-                    min_samples=self._tracker_stable_samples,
-                    min_window_s=self._tracker_stable_window_s,
-                ):
-                    continue
-                if not (self._auto_reference and self._require_start_confirmation):
-                    self._prime_runtime_tracker(sample)
-                    logger.info("TRACKER READY: stable pose window accepted.")
-                    return sample
-                phase = "await-confirm"
-                try:
-                    confirmation_state = int(self._command_state_provider())
-                except Exception:
-                    confirmation_state = None
-                logger.info(
-                    "TRACKER READY: stable. Hold Pika still and quickly squeeze "
-                    "the gripper to start teleoperation."
-                )
-                continue
-
-            if phase == "await-confirm":
-                if not self._samples_are_stable(
-                    samples,
-                    min_samples=self._tracker_stable_samples,
-                    min_window_s=self._tracker_stable_window_s,
-                ):
-                    phase = "settling"
-                    logger.warning(
-                        "TRACKER READY: pose moved before confirmation; settling again."
-                    )
-                    continue
-                try:
-                    command_now = int(self._command_state_provider())
-                except Exception:
-                    command_now = None
-                if not command_state_edge(command_now, confirmation_state):
-                    if command_now is not None:
-                        confirmation_state = command_now
-                    continue
-                self._prev_command_state = command_now
-                phase = "recheck"
-                samples.clear()
-                logger.info("TRACKER READY: start confirmed; rechecking pose...")
-                continue
-
-            if phase == "recheck" and self._samples_are_stable(
-                samples,
-                min_samples=self._tracker_recheck_samples,
-                min_window_s=self._tracker_recheck_window_s,
-            ):
-                self._prime_runtime_tracker(sample)
-                logger.info("TRACKER READY: confirmed stable pose accepted.")
-                return sample
-
-        message = (
-            f"tracker did not become stable and confirmed within "
-            f"{self._tracker_ready_timeout_s:.1f}s"
-        )
-        if context is not None and hasattr(context, "abort"):
-            import grpc
-
-            context.abort(grpc.StatusCode.FAILED_PRECONDITION, message)
-        raise RuntimeError(message)
 
     def _prime_runtime_tracker(self, sample: TrackerSample) -> None:
         self._last_seen_tracker_source_ts = sample.source_timestamp_s

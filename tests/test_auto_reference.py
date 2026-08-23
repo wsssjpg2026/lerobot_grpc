@@ -164,11 +164,6 @@ def _make_leader(
         auto_reference=auto_reference,
         arm_prefix=arm_prefix,
         cumulative_clutch=cumulative_clutch,
-        tracker_ready_timeout_s=1.0,
-        tracker_min_soak_s=0.0,
-        tracker_stable_window_s=0.0,
-        tracker_stable_samples=1,
-        require_start_confirmation=False,
         tracker_recheck_window_s=0.0,
         tracker_recheck_samples=1,
         tracker_health_enabled=False,
@@ -742,7 +737,7 @@ class TestAutoReference:
         np.testing.assert_allclose(_delta_pos(action), [0.0, 0.0, 0.0], atol=1e-9)
 
     def test_get_action_never_lazy_latches_before_connect(self, tmp_path):
-        """A client cannot bypass the Connect readiness barrier."""
+        """GetAction cannot bypass hardware connection/readiness."""
         servicer = _make_leader(tmp_path, auto_reference=True)
         action = servicer._compute_action()
         assert servicer._t_begin_pos is None
@@ -753,8 +748,8 @@ class TestAutoReference:
 class TestLateTrackerDiscovery:
     def test_tracker_discovered_late_heals_pose_channel(self, tmp_path):
         """Cold-start race (05 号议题实测): the tracker registers with
-        pysurvive after Connect's 10s deadline, so _tracker_device stays
-        None and the pose channel used to be dead for the process lifetime.
+        pysurvive after hardware Connect, so _tracker_device initially stays
+        None. The pose channel used to be dead for the process lifetime.
         _read_tracker_pose now re-scans lazily until the tracker appears."""
         servicer = _make_leader(tmp_path, auto_reference=True)
         servicer._tracker_device = None            # Connect gave up
@@ -782,9 +777,6 @@ class TestDefaultContract:
         """
         servicer = _make_leader(tmp_path, auto_reference=False)
         servicer._tracker_health_enabled = True
-        servicer._tracker_stable_samples = 3
-        servicer._tracker_stable_window_s = 0.02
-        servicer._tracker_position_spread_m = 0.0001
         original_get_pose = servicer._device.get_pose
 
         def moving_pose(device):

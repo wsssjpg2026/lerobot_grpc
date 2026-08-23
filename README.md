@@ -161,9 +161,11 @@ conda run -n collection-client collection-teleop \
   2>&1 | tee /tmp/s1_collection_teleop/04_collection_client.log
 ```
 
-Terminal 2 waits for fresh optical health, a 10 s solver soak, and a stable
-window, but it does not ask for a second startup confirmation.  Terminal 4
-then asks the operator to arrange Pika and press Enter.  Collection latches
+Terminal 2 returns from device Connect as soon as hardware is established.
+Terminal 4 polls the leader-owned readiness policy and shows the current
+Lighthouse cohort/global-scene/stability phase. It asks the operator to
+arrange Pika and press Enter only after the global scene has a fresh solve and
+the one-second optical stability window has converged. Collection latches
 the follower, captures follower reference then leader reference, verifies an
 identity delta, and only then releases motion. During teleoperation a rapid
 Pika gripper squeeze toggles clutch. Any optical interruption long enough to
@@ -178,12 +180,12 @@ reference precondition failure returns to recovery without ending the session;
 only a successful transaction emits `TRACKING_READY` and resumes motion.
 Initial alignment reference capture allows up to 5 mm / 2 degrees of short
 hand-held spread and waits up to 5 seconds. A temporary precondition failure
-is reported as `ALIGNMENT_RETRY_REQUIRED`; Collection keeps the follower held
-and waits for another Enter instead of terminating the session.
+revokes that prompt and returns Collection to `TRACKER_SETTLING`; the follower
+stays held until a new READY generation produces a new Enter prompt.
 
 If another follower already owns `127.0.0.1:5555`, choose a free port (for
-example `15555`) in both Terminal 1's `--address` and Terminal 3's
-`--robot.address`. A more-specific existing localhost listener can otherwise
+example `15555`) in both Terminal 1's `--address` and Terminal 4's
+`--robot-endpoint`. A more-specific existing localhost listener can otherwise
 receive the connection intended for a new `0.0.0.0:5555` server.
 
 The follower exposes all 22 independent S1 coordinates in native SI units
