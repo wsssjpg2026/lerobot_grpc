@@ -75,6 +75,7 @@ class GRPCLeader(Teleoperator):
         self._last_tracking_state = (
             device_pb2.TrackingState.TRACKING_STATE_UNSPECIFIED
         )
+        self._last_tracking_readiness: device_pb2.TrackingReadiness | None = None
 
         self.stub: device_pb2_grpc.TeleoperatorStub | None = None
         self.channel: grpc.Channel | None = None
@@ -149,6 +150,10 @@ class GRPCLeader(Teleoperator):
         """
         return int(self._last_tracking_state)
 
+    @property
+    def last_tracking_readiness(self) -> device_pb2.TrackingReadiness | None:
+        return self._last_tracking_readiness
+
     @staticmethod
     def _verify_features(feature: RobotObservation | RobotAction, feature_dict: dict[str, type | tuple]) -> bool:
         """Verifies that the provided feature dictionary matches the expected features."""
@@ -204,6 +209,62 @@ class GRPCLeader(Teleoperator):
         self._latest_act_ft.clear()
         self._latest_fb_ft.clear()
         self._last_action_quality = device_pb2.FrameQuality.FRAME_QUALITY_GOOD
+        self._last_tracking_readiness = None
+
+    def get_tracking_readiness(self) -> device_pb2.TrackingReadiness:
+        """Return the server-owned Tracker/global-scene readiness state."""
+        if self.stub is None:
+            raise DeviceNotConnectedError("GRPCLeader channel is not connected.")
+        try:
+            readiness = self.stub.GetTrackingReadiness(
+                Empty(), timeout=self.data_timeout_s
+            )
+        except grpc.RpcError as e:
+            raise DeviceNotConnectedError(
+                f"Failed to get tracking readiness from GRPCLeader at "
+                f"{self.address}: {e}"
+            ) from e
+        self._last_tracking_readiness = readiness
+        return readiness
+
+    def _wait_for_tracking_readiness(self) -> device_pb2.TrackingReadiness:
+        deadline = time.monotonic() + self.warmup_timeout_s
+        last_state: int | None = None
+        last_summary = 0.0
+        ready_states = {
+            device_pb2.TrackingReadinessState.TRACKING_READINESS_STATE_READY,
+            device_pb2.TrackingReadinessState.
+            TRACKING_READINESS_STATE_NOT_APPLICABLE,
+        }
+        while time.monotonic() < deadline:
+            readiness = self.get_tracking_readiness()
+            now = time.monotonic()
+            if readiness.state in ready_states:
+                return readiness
+            if (
+                readiness.state
+                == device_pb2.TrackingReadinessState.TRACKING_READINESS_STATE_ERROR
+            ):
+                raise DeviceNotConnectedError(
+                    f"Tracker readiness failed: {readiness.reason}"
+                )
+            if readiness.state != last_state or now - last_summary >= 10.0:
+                last_state = readiness.state
+                last_summary = now
+                logger.info(
+                    "Waiting for tracking readiness: %s — %s",
+                    device_pb2.TrackingReadinessState.Name(
+                        readiness.state
+                    ).removeprefix("TRACKING_READINESS_STATE_"),
+                    readiness.reason,
+                )
+            time.sleep(0.2)
+        readiness = self._last_tracking_readiness
+        detail = "no readiness response" if readiness is None else readiness.reason
+        raise DeviceNotConnectedError(
+            f"Tracker did not become ready within {self.warmup_timeout_s:.1f}s: "
+            f"{detail}"
+        )
 
     @check_if_already_connected
     def connect(self, calibrate: bool = True) -> None:
@@ -212,7 +273,7 @@ class GRPCLeader(Teleoperator):
         try:
             self._get_or_create_stub()
 
-            calib_info = self.stub.Connect(Empty(), timeout=self.warmup_timeout_s)
+            calib_info = self.stub.Connect(Empty(), timeout=self.connect_timeout_s)
             self._is_connected = True
             logger.info(f"Connected {self.id} to GRPCLeader at {self.address}.")
             if calib_info.status == device_pb2.CalibrationStatus.CALIBRATED:
@@ -240,6 +301,7 @@ class GRPCLeader(Teleoperator):
                 self._init_feature(fi, self._latest_fb_ft)
 
             if self.need_warmup and self._is_calibrated:
+                self._wait_for_tracking_readiness()
                 temp_act = self.get_action()
                 if not self._verify_features(temp_act, self.action_features):
                     raise DeviceNotConnectedError("Failed to warm up the GRPCLeader: action features mismatch.")
@@ -515,10 +577,34 @@ class GRPCLeader(Teleoperator):
             ) from e
 
     @check_if_not_connected
-    def set_reference(self) -> None:
+    def set_reference(self, readiness_token: str | None = None) -> None:
         """Sets the reference for the remote robot. On receiving this command, the remote robot will set its current state as the reference state."""
         try:
-            self.stub.SetReference(Empty(), timeout=self.reference_timeout_s)
+            if readiness_token is None:
+                readiness = self.get_tracking_readiness()
+                if (
+                    readiness.state
+                    == device_pb2.TrackingReadinessState.
+                    TRACKING_READINESS_STATE_READY
+                ):
+                    readiness_token = readiness.token
+                elif (
+                    readiness.state
+                    == device_pb2.TrackingReadinessState.
+                    TRACKING_READINESS_STATE_NOT_APPLICABLE
+                ):
+                    readiness_token = ""
+                else:
+                    raise ReferenceNotReadyError(
+                        f"Reference is not ready on GRPCLeader at "
+                        f"{self.address}: {readiness.reason}"
+                    )
+            self.stub.SetReference(
+                device_pb2.SetReferenceRequest(
+                    readiness_token=readiness_token or ""
+                ),
+                timeout=self.reference_timeout_s,
+            )
         except grpc.RpcError as e:
             if e.code() in (
                 grpc.StatusCode.FAILED_PRECONDITION,

@@ -57,6 +57,22 @@ class TrackingState(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     TRACKING_STATE_CONFIRM_REQUIRED: _ClassVar[TrackingState]
     TRACKING_STATE_TRANSIENT_LOSS: _ClassVar[TrackingState]
     TRACKING_STATE_REFERENCE_PENDING: _ClassVar[TrackingState]
+    TRACKING_STATE_POSE_DISCONTINUITY: _ClassVar[TrackingState]
+    TRACKING_STATE_POSE_CONFIRM_REQUIRED: _ClassVar[TrackingState]
+    TRACKING_STATE_MAP_CHANGED: _ClassVar[TrackingState]
+
+class TrackingReadinessState(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    TRACKING_READINESS_STATE_UNSPECIFIED: _ClassVar[TrackingReadinessState]
+    TRACKING_READINESS_STATE_NOT_APPLICABLE: _ClassVar[TrackingReadinessState]
+    TRACKING_READINESS_STATE_STARTING: _ClassVar[TrackingReadinessState]
+    TRACKING_READINESS_STATE_WAITING_LIGHTHOUSE: _ClassVar[TrackingReadinessState]
+    TRACKING_READINESS_STATE_SOLVING_GLOBAL_SCENE: _ClassVar[TrackingReadinessState]
+    TRACKING_READINESS_STATE_VERIFYING_STABILITY: _ClassVar[TrackingReadinessState]
+    TRACKING_READINESS_STATE_READY: _ClassVar[TrackingReadinessState]
+    TRACKING_READINESS_STATE_LOST: _ClassVar[TrackingReadinessState]
+    TRACKING_READINESS_STATE_MAP_CHANGED: _ClassVar[TrackingReadinessState]
+    TRACKING_READINESS_STATE_ERROR: _ClassVar[TrackingReadinessState]
 
 class CalibrationStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -101,6 +117,19 @@ TRACKING_STATE_RECOVERING: TrackingState
 TRACKING_STATE_CONFIRM_REQUIRED: TrackingState
 TRACKING_STATE_TRANSIENT_LOSS: TrackingState
 TRACKING_STATE_REFERENCE_PENDING: TrackingState
+TRACKING_STATE_POSE_DISCONTINUITY: TrackingState
+TRACKING_STATE_POSE_CONFIRM_REQUIRED: TrackingState
+TRACKING_STATE_MAP_CHANGED: TrackingState
+TRACKING_READINESS_STATE_UNSPECIFIED: TrackingReadinessState
+TRACKING_READINESS_STATE_NOT_APPLICABLE: TrackingReadinessState
+TRACKING_READINESS_STATE_STARTING: TrackingReadinessState
+TRACKING_READINESS_STATE_WAITING_LIGHTHOUSE: TrackingReadinessState
+TRACKING_READINESS_STATE_SOLVING_GLOBAL_SCENE: TrackingReadinessState
+TRACKING_READINESS_STATE_VERIFYING_STABILITY: TrackingReadinessState
+TRACKING_READINESS_STATE_READY: TrackingReadinessState
+TRACKING_READINESS_STATE_LOST: TrackingReadinessState
+TRACKING_READINESS_STATE_MAP_CHANGED: TrackingReadinessState
+TRACKING_READINESS_STATE_ERROR: TrackingReadinessState
 CALIBRATION_STATUS_UNSPECIFIED: CalibrationStatus
 CALIBRATED: CalibrationStatus
 NEED_TO_CALIBRATE: CalibrationStatus
@@ -253,6 +282,42 @@ class ResumeResponse(_message.Message):
     resumed: bool
     hold_epoch: int
     def __init__(self, resumed: _Optional[bool] = ..., hold_epoch: _Optional[int] = ...) -> None: ...
+
+class TrackingReadiness(_message.Message):
+    __slots__ = ("state", "reason", "context_epoch", "global_scene_generation", "lighthouse_cohort_generation", "readiness_generation", "expected_lighthouses", "solved_lighthouses", "token", "stable_sample_count", "stable_window_s", "position_spread_m", "rotation_spread_rad")
+    STATE_FIELD_NUMBER: _ClassVar[int]
+    REASON_FIELD_NUMBER: _ClassVar[int]
+    CONTEXT_EPOCH_FIELD_NUMBER: _ClassVar[int]
+    GLOBAL_SCENE_GENERATION_FIELD_NUMBER: _ClassVar[int]
+    LIGHTHOUSE_COHORT_GENERATION_FIELD_NUMBER: _ClassVar[int]
+    READINESS_GENERATION_FIELD_NUMBER: _ClassVar[int]
+    EXPECTED_LIGHTHOUSES_FIELD_NUMBER: _ClassVar[int]
+    SOLVED_LIGHTHOUSES_FIELD_NUMBER: _ClassVar[int]
+    TOKEN_FIELD_NUMBER: _ClassVar[int]
+    STABLE_SAMPLE_COUNT_FIELD_NUMBER: _ClassVar[int]
+    STABLE_WINDOW_S_FIELD_NUMBER: _ClassVar[int]
+    POSITION_SPREAD_M_FIELD_NUMBER: _ClassVar[int]
+    ROTATION_SPREAD_RAD_FIELD_NUMBER: _ClassVar[int]
+    state: TrackingReadinessState
+    reason: str
+    context_epoch: int
+    global_scene_generation: int
+    lighthouse_cohort_generation: int
+    readiness_generation: int
+    expected_lighthouses: _containers.RepeatedScalarFieldContainer[str]
+    solved_lighthouses: _containers.RepeatedScalarFieldContainer[str]
+    token: str
+    stable_sample_count: int
+    stable_window_s: float
+    position_spread_m: float
+    rotation_spread_rad: float
+    def __init__(self, state: _Optional[_Union[TrackingReadinessState, str]] = ..., reason: _Optional[str] = ..., context_epoch: _Optional[int] = ..., global_scene_generation: _Optional[int] = ..., lighthouse_cohort_generation: _Optional[int] = ..., readiness_generation: _Optional[int] = ..., expected_lighthouses: _Optional[_Iterable[str]] = ..., solved_lighthouses: _Optional[_Iterable[str]] = ..., token: _Optional[str] = ..., stable_sample_count: _Optional[int] = ..., stable_window_s: _Optional[float] = ..., position_spread_m: _Optional[float] = ..., rotation_spread_rad: _Optional[float] = ...) -> None: ...
+
+class SetReferenceRequest(_message.Message):
+    __slots__ = ("readiness_token",)
+    READINESS_TOKEN_FIELD_NUMBER: _ClassVar[int]
+    readiness_token: str
+    def __init__(self, readiness_token: _Optional[str] = ...) -> None: ...
 
 class GetInfoRequest(_message.Message):
     __slots__ = ()

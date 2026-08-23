@@ -16,7 +16,7 @@ class GRPCLeaderConfig(TeleoperatorConfig):
     address: str = "localhost:5555"
 
     need_warmup: bool = True
-    warmup_timeout_s: float = 10.0
+    warmup_timeout_s: float = 120.0
     connect_timeout_s: float = 5.0
     data_timeout_s: float = 5.0
     # SetReference may intentionally wait up to 5s for a stable Pika pose.

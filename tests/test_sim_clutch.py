@@ -24,6 +24,7 @@ from lerobot_robot_grpc.leader.pika_sense_leader_server import (
     PikaSenseServicer,
     command_state_edge,
 )
+from lerobot_robot_grpc.leader.tracker_readiness import TrackerReadinessGate
 
 pika_sense = pytest.importorskip("pika.sense")
 
@@ -75,6 +76,13 @@ def _make_leader(tmp_path, command_provider):
     )
     servicer._device = _FakeSense()
     servicer._tracker_device = "FAKE"
+    servicer._readiness_gate = TrackerReadinessGate(
+        cohort_stable_s=0.0,
+        stable_window_s=0.0,
+        stable_samples=1,
+        position_spread_m=1.0,
+        rotation_spread_rad=np.pi,
+    )
     return servicer
 
 

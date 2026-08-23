@@ -680,9 +680,14 @@ class TeleoperatorStub:
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
                 response_deserializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.DeviceInfo.FromString,
                 _registered_method=True)
+        self.GetTrackingReadiness = channel.unary_unary(
+                '/rdc.v1.Teleoperator/GetTrackingReadiness',
+                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+                response_deserializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.TrackingReadiness.FromString,
+                _registered_method=True)
         self.SetReference = channel.unary_unary(
                 '/rdc.v1.Teleoperator/SetReference',
-                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+                request_serializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.SetReferenceRequest.SerializeToString,
                 response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
                 _registered_method=True)
 
@@ -750,6 +755,12 @@ class TeleoperatorServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetTrackingReadiness(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def SetReference(self, request, context):
         """锁定当前位姿为基准;之后 GetAction 输出相对该基准的 delta(A 类 engage 协议)。
         """
@@ -810,9 +821,14 @@ def add_TeleoperatorServicer_to_server(servicer, server):
                     request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
                     response_serializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.DeviceInfo.SerializeToString,
             ),
+            'GetTrackingReadiness': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetTrackingReadiness,
+                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                    response_serializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.TrackingReadiness.SerializeToString,
+            ),
             'SetReference': grpc.unary_unary_rpc_method_handler(
                     servicer.SetReference,
-                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                    request_deserializer=lerobot__robot__grpc_dot_protos_dot_device__pb2.SetReferenceRequest.FromString,
                     response_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             ),
     }
@@ -1097,6 +1113,33 @@ class Teleoperator:
             _registered_method=True)
 
     @staticmethod
+    def GetTrackingReadiness(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/rdc.v1.Teleoperator/GetTrackingReadiness',
+            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            lerobot__robot__grpc_dot_protos_dot_device__pb2.TrackingReadiness.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def SetReference(request,
             target,
             options=(),
@@ -1111,7 +1154,7 @@ class Teleoperator:
             request,
             target,
             '/rdc.v1.Teleoperator/SetReference',
-            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            lerobot__robot__grpc_dot_protos_dot_device__pb2.SetReferenceRequest.SerializeToString,
             google_dot_protobuf_dot_empty__pb2.Empty.FromString,
             options,
             channel_credentials,

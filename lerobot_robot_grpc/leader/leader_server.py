@@ -6,7 +6,7 @@ from threading import Lock
 
 import grpc
 from concurrent import futures
-from lerobot_robot_grpc.protos import device_pb2_grpc
+from lerobot_robot_grpc.protos import device_pb2, device_pb2_grpc
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +74,16 @@ class LeaderServicer(device_pb2_grpc.TeleoperatorServicer, ABC):
     def GetStatus(self, request, context):
         """Gets the status of the teleoperator."""
         pass
+
+    def GetTrackingReadiness(self, request, context):
+        """Non-tracking leaders are ready without a Tracker lease."""
+        return device_pb2.TrackingReadiness(
+            state=(
+                device_pb2.TrackingReadinessState.
+                TRACKING_READINESS_STATE_NOT_APPLICABLE
+            ),
+            reason="teleoperator does not use optical tracking",
+        )
 
     @abstractmethod
     def SetReference(self, request, context):

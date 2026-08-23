@@ -79,6 +79,24 @@ enum TrackingState {
     // The post-jump pose is stable again.  The operator must explicitly align
     // and confirm a new reference before motion can resume.
     TRACKING_STATE_POSE_CONFIRM_REQUIRED = 9;
+    // The libsurvive context, Lighthouse cohort, or solved global map changed.
+    TRACKING_STATE_MAP_CHANGED = 10;
+}
+
+// Tracker startup/global-scene readiness.  Unlike TrackingState (the runtime
+// hot-path motion gate), this state is explicitly polled by orchestration
+// before it offers an alignment prompt to the operator.
+enum TrackingReadinessState {
+    TRACKING_READINESS_STATE_UNSPECIFIED = 0;
+    TRACKING_READINESS_STATE_NOT_APPLICABLE = 1;
+    TRACKING_READINESS_STATE_STARTING = 2;
+    TRACKING_READINESS_STATE_WAITING_LIGHTHOUSE = 3;
+    TRACKING_READINESS_STATE_SOLVING_GLOBAL_SCENE = 4;
+    TRACKING_READINESS_STATE_VERIFYING_STABILITY = 5;
+    TRACKING_READINESS_STATE_READY = 6;
+    TRACKING_READINESS_STATE_LOST = 7;
+    TRACKING_READINESS_STATE_MAP_CHANGED = 8;
+    TRACKING_READINESS_STATE_ERROR = 9;
 }
 
 enum CalibrationStatus {
@@ -211,6 +229,28 @@ message ResumeResponse {
     uint64 hold_epoch = 2;
 }
 
+message TrackingReadiness {
+    TrackingReadinessState state = 1;
+    string reason = 2;
+    uint64 context_epoch = 3;
+    uint64 global_scene_generation = 4;
+    uint64 lighthouse_cohort_generation = 5;
+    uint64 readiness_generation = 6;
+    repeated string expected_lighthouses = 7;
+    repeated string solved_lighthouses = 8;
+    string token = 9;
+    uint32 stable_sample_count = 10;
+    float stable_window_s = 11;
+    float position_spread_m = 12;
+    float rotation_spread_rad = 13;
+}
+
+message SetReferenceRequest {
+    // Opaque token returned by GetTrackingReadiness.  Tracking-backed leaders
+    // reject stale/missing tokens; non-tracking leaders ignore this field.
+    string readiness_token = 1;
+}
+
 // GetInfo:一次往返拿全 schema(替代原先三个 Get*FeatureInfo 流式 RPC)。
 // 连接时调用一次;之后每帧的 OneFeature 不再重发 shape/dtype/encoding。
 message GetInfoRequest {}
@@ -267,6 +307,8 @@ service Teleoperator {
 
     rpc GetStatus(google.protobuf.Empty) returns (DeviceInfo);
 
+    rpc GetTrackingReadiness(google.protobuf.Empty) returns (TrackingReadiness);
+
     // 锁定当前位姿为基准;之后 GetAction 输出相对该基准的 delta(A 类 engage 协议)。
-    rpc SetReference(google.protobuf.Empty) returns (google.protobuf.Empty);
+    rpc SetReference(SetReferenceRequest) returns (google.protobuf.Empty);
 }

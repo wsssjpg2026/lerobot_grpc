@@ -54,6 +54,10 @@ from lerobot_robot_grpc.pose_delta_schema import (
     build_pose_delta_feature_info,
 )
 from lerobot_robot_grpc.protos import device_pb2
+from lerobot_robot_grpc.leader.tracker_readiness import (
+    ReadinessSnapshot,
+    TrackerReadinessGate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -375,6 +379,24 @@ class PikaSenseServicer(LeaderServicer):
         self._tracker_min_optical_lighthouses = int(
             tracker_min_optical_lighthouses
         )
+        self._readiness_gate = TrackerReadinessGate(
+            cohort_stable_s=2.0,
+            stable_window_s=1.0,
+            stable_samples=20,
+            position_spread_m=0.005,
+            rotation_spread_rad=np.radians(2.0),
+            optical_stale_s=self._tracker_stale_s,
+            map_position_delta_m=0.005,
+            map_rotation_delta_rad=np.radians(1.0),
+        )
+        self._last_readiness = ReadinessSnapshot(
+            state=(
+                device_pb2.TrackingReadinessState.
+                TRACKING_READINESS_STATE_STARTING
+            ),
+            reason="Pika hardware has not started",
+        )
+        self._last_readiness_state_logged: int | None = None
         self._last_seen_tracker_source_ts: float | None = None
         self._last_seen_tracker_raw_optical_ts: float | None = None
         self._last_seen_tracker_optical_ts: float | None = None
@@ -555,12 +577,14 @@ class PikaSenseServicer(LeaderServicer):
             raw_optical_timestamp_s = source_timestamp_s
             raw_optical_age_s = 0.0
             raw_optical_measurement_count = self._tracker_min_optical_measurements
-            raw_optical_event_sequence = 0
+            raw_optical_event_sequence = max(
+                1, int(source_timestamp_s * 1_000_000_000.0)
+            )
             optical_timestamp_s = source_timestamp_s
             optical_age_s = 0.0
             optical_measurement_count = self._tracker_min_optical_measurements
             optical_lighthouse_count = self._tracker_min_optical_lighthouses
-            optical_event_sequence = 0
+            optical_event_sequence = raw_optical_event_sequence
             pose_confidence = None
         if not (
             np.isfinite(pos).all()
@@ -598,6 +622,73 @@ class PikaSenseServicer(LeaderServicer):
         if sample is None:
             return None
         return sample.position, sample.rotation
+
+    def _tracker_health_facts(
+        self, sample: TrackerSample | None
+    ) -> dict[str, Any]:
+        """Read generic SDK facts; the readiness gate applies policy."""
+        if not self._tracker_health_enabled:
+            # Explicit test/debug bypass only.  Production always requires the
+            # native SDK bridge and cannot reach this branch with defaults.
+            return {
+                "bridge_available": True,
+                "context_epoch": 1,
+                "global_scene_generation": 1,
+                "lighthouse_cohort_generation": 1,
+                "discovered_lighthouses": ("LH0",),
+                "lighthouses": {
+                    "LH0": {
+                        "position": (0.0, 0.0, 0.0),
+                        "rotation": (1.0, 0.0, 0.0, 0.0),
+                    }
+                },
+            }
+        try:
+            health = self._device.get_tracker_health(self._tracker_device)
+        except Exception as exc:
+            return {
+                "bridge_available": False,
+                "bridge_error": f"failed to read Pika tracking health: {exc}",
+                "context_epoch": 0,
+                "global_scene_generation": 0,
+                "lighthouses": {},
+                "discovered_lighthouses": (),
+            }
+        if not isinstance(health, dict):
+            return {
+                "bridge_available": False,
+                "bridge_error": "Pika SDK returned invalid tracking health",
+                "context_epoch": 0,
+                "global_scene_generation": 0,
+                "lighthouses": {},
+                "discovered_lighthouses": (),
+            }
+        return health
+
+    def _update_tracking_readiness(self) -> ReadinessSnapshot:
+        sample = self._read_tracker_sample()
+        health = self._tracker_health_facts(sample)
+        snapshot = self._readiness_gate.update(
+            health,
+            sample,
+            now_s=time.monotonic(),
+        )
+        self._last_readiness = snapshot
+        if snapshot.state != self._last_readiness_state_logged:
+            self._last_readiness_state_logged = snapshot.state
+            logger.info(
+                "TRACKER READINESS: %s — %s (context=%d scene=%d "
+                "expected=%s solved=%s)",
+                device_pb2.TrackingReadinessState.Name(snapshot.state).removeprefix(
+                    "TRACKING_READINESS_STATE_"
+                ),
+                snapshot.reason,
+                snapshot.context_epoch,
+                snapshot.global_scene_generation,
+                list(snapshot.expected_lighthouses),
+                list(snapshot.solved_lighthouses),
+            )
+        return snapshot
 
     @staticmethod
     def _rotation_distance_rad(a: np.ndarray, b: np.ndarray) -> float:
@@ -1686,6 +1777,17 @@ class PikaSenseServicer(LeaderServicer):
     def _compute_action(self) -> dict[str, float]:
         """Read hardware and publish the validated latch-once pose offset."""
         with self._lock:
+            readiness = self._update_tracking_readiness()
+            if readiness.state in (
+                device_pb2.TrackingReadinessState.TRACKING_READINESS_STATE_LOST,
+                device_pb2.TrackingReadinessState.TRACKING_READINESS_STATE_MAP_CHANGED,
+                device_pb2.TrackingReadinessState.TRACKING_READINESS_STATE_ERROR,
+            ):
+                self._require_new_reference(
+                    f"tracking readiness is "
+                    f"{device_pb2.TrackingReadinessState.Name(readiness.state)}: "
+                    f"{readiness.reason}"
+                )
             tracker = self._runtime_tracker_pose()
             now = time.time()
 
@@ -1845,7 +1947,14 @@ class PikaSenseServicer(LeaderServicer):
                 "hand.delta_rot.qw": float(delta_quat[3]),
                 "gripper.distance": gripper_distance,
             }
-            if self._reference_confirmation_pending:
+            if (
+                readiness.state
+                == device_pb2.TrackingReadinessState.TRACKING_READINESS_STATE_MAP_CHANGED
+            ):
+                self._last_tracking_state = (
+                    device_pb2.TrackingState.TRACKING_STATE_MAP_CHANGED
+                )
+            elif self._reference_confirmation_pending:
                 self._last_tracking_state = (
                     device_pb2.TrackingState.TRACKING_STATE_REFERENCE_PENDING
                 )
@@ -1898,6 +2007,7 @@ class PikaSenseServicer(LeaderServicer):
                 device_pb2.TrackingState.TRACKING_STATE_RECOVERING,
                 device_pb2.TrackingState.TRACKING_STATE_POSE_DISCONTINUITY,
                 device_pb2.TrackingState.TRACKING_STATE_POSE_CONFIRM_REQUIRED,
+                device_pb2.TrackingState.TRACKING_STATE_MAP_CHANGED,
             ):
                 self._last_action_quality = (
                     device_pb2.FrameQuality.FRAME_QUALITY_STALE
@@ -2035,11 +2145,6 @@ class PikaSenseServicer(LeaderServicer):
             self._clutched = False
             self._pending_relatch = False
             self._prev_command_state = None
-            ready_sample = self._await_tracker_ready(context)
-            if self._auto_reference:
-                self._auto_latch(
-                    (ready_sample.position, ready_sample.rotation)
-                )
             self._connected = True
             if not self._calibrated:
                 self._calib_step = 0
@@ -2047,6 +2152,11 @@ class PikaSenseServicer(LeaderServicer):
             calibrated = self._calibrated
         # Return calibration status — the client auto-triggers Calibrate
         # RPC if NEED_TO_CALIBRATE (via connect(calibrate=True)).
+        if context is None and self._auto_reference:
+            # Direct unit-test calls have no client adapter to perform the
+            # readiness poll.  The real gRPC Connect path always returns
+            # immediately and GRPCLeader polls GetTrackingReadiness.
+            self.GetTrackingReadiness(None, None)
         if calibrated:
             return device_pb2.CalibrationInfo(
                 status=device_pb2.CalibrationStatus.CALIBRATED
@@ -2054,6 +2164,29 @@ class PikaSenseServicer(LeaderServicer):
         return device_pb2.CalibrationInfo(
             status=device_pb2.CalibrationStatus.NEED_TO_CALIBRATE
         )
+
+    def GetTrackingReadiness(self, request, context):
+        with self._lock:
+            if not self._hardware_started:
+                return device_pb2.TrackingReadiness(
+                    state=(
+                        device_pb2.TrackingReadinessState.
+                        TRACKING_READINESS_STATE_STARTING
+                    ),
+                    reason="Pika hardware has not started",
+                )
+            snapshot = self._update_tracking_readiness()
+            if (
+                self._auto_reference
+                and snapshot.state
+                == device_pb2.TrackingReadinessState.TRACKING_READINESS_STATE_READY
+                and self._t_begin_pos is None
+            ):
+                sample = self._read_tracker_sample()
+                if sample is not None and self._sample_has_optical_support(sample):
+                    self._prime_runtime_tracker(sample)
+                    self._auto_latch((sample.position, sample.rotation))
+            return snapshot.to_proto()
 
     def Calibrate(self, request, context):
         # Wait for any in-progress step thread to finish (CalibrateDone has
@@ -2162,6 +2295,27 @@ class PikaSenseServicer(LeaderServicer):
         any fresh offset is applied — current hand = current arm.
         """
         with self._lock:
+            before = self._update_tracking_readiness()
+            requested_token = str(
+                getattr(request, "readiness_token", "") or ""
+            )
+            # Direct in-process calls with no RPC context are unit-test hooks,
+            # not a wire compatibility path.  Real clients must send the token.
+            if request is None and context is None:
+                requested_token = before.token
+            if not self._readiness_gate.token_is_current(
+                requested_token, before
+            ):
+                message = (
+                    "SetReference rejected: stale or missing tracking "
+                    f"readiness token (state="
+                    f"{device_pb2.TrackingReadinessState.Name(before.state)})"
+                )
+                if context is not None and hasattr(context, "abort"):
+                    import grpc
+
+                    context.abort(grpc.StatusCode.FAILED_PRECONDITION, message)
+                raise RuntimeError(message)
             sample = self._await_reference_sample(context)
             if sample is None:
                 detail = self._last_reference_failure_reason or "unknown reason"
@@ -2179,6 +2333,19 @@ class PikaSenseServicer(LeaderServicer):
                 self._pending_relatch = True
                 self._tracker_recovery_samples.clear()
                 self._tracker_recovery_ready = False
+                if context is not None and hasattr(context, "abort"):
+                    import grpc
+
+                    context.abort(grpc.StatusCode.FAILED_PRECONDITION, message)
+                raise RuntimeError(message)
+            after = self._update_tracking_readiness()
+            if not self._readiness_gate.token_is_current(
+                requested_token, after
+            ):
+                message = (
+                    "SetReference rejected: tracking readiness changed during "
+                    "reference capture"
+                )
                 if context is not None and hasattr(context, "abort"):
                     import grpc
 

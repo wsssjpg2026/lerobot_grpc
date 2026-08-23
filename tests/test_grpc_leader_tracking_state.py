@@ -47,6 +47,13 @@ def _leader_with_snapshot(*, quality: int, tracking_state: int) -> GRPCLeader:
     leader._last_tracking_state = (
         device_pb2.TrackingState.TRACKING_STATE_UNSPECIFIED
     )
+    leader._last_tracking_readiness = None
+    leader.stub.GetTrackingReadiness.return_value = device_pb2.TrackingReadiness(
+        state=(
+            device_pb2.TrackingReadinessState.TRACKING_READINESS_STATE_READY
+        ),
+        token="lease-123",
+    )
     return leader
 
 
@@ -129,6 +136,8 @@ def test_set_reference_uses_dedicated_reference_deadline() -> None:
     leader.set_reference()
 
     assert leader.stub.SetReference.call_args.kwargs["timeout"] == pytest.approx(0.25)
+    request = leader.stub.SetReference.call_args.args[0]
+    assert request.readiness_token == "lease-123"
 
 
 def test_set_reference_maps_deadline_to_retryable_error() -> None:

@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 from lerobot_robot_grpc.leader.pika_sense_leader_server import PikaSenseServicer
+from lerobot_robot_grpc.leader.tracker_readiness import TrackerReadinessGate
 from lerobot_robot_grpc.protos import device_pb2
 
 pika_sense = pytest.importorskip("pika.sense")
@@ -124,6 +125,25 @@ class _FakeSense:
             optical_event_sequence=self.optical_event_sequence,
         )
 
+    def get_tracker_health(self, device=None):
+        return {
+            "bridge_available": True,
+            "context_epoch": 1,
+            "global_scene_generation": 1,
+            "lighthouse_cohort_generation": 2,
+            "discovered_lighthouses": ("LH0", "LH1"),
+            "lighthouses": {
+                "LH0": {
+                    "position": (0.0, 0.0, 0.0),
+                    "rotation": (1.0, 0.0, 0.0, 0.0),
+                },
+                "LH1": {
+                    "position": (2.0, 0.0, 0.0),
+                    "rotation": (1.0, 0.0, 0.0, 0.0),
+                },
+            },
+        }
+
     def get_gripper_distance(self):
         return self.gripper
 
@@ -155,6 +175,13 @@ def _make_leader(
     )
     servicer._device = _FakeSense()
     servicer._tracker_device = "FAKE"
+    servicer._readiness_gate = TrackerReadinessGate(
+        cohort_stable_s=0.0,
+        stable_window_s=0.0,
+        stable_samples=1,
+        position_spread_m=1.0,
+        rotation_spread_rad=np.pi,
+    )
     return servicer
 
 
@@ -190,22 +217,11 @@ class TestAutoReference:
         action = servicer._compute_action()
         np.testing.assert_allclose(_delta_pos(action), [0.0, 0.0, 0.0], atol=1e-9)
 
-    def test_connect_rejects_a_repeated_cached_pose(self, tmp_path):
+    def test_connect_is_hardware_only_and_readiness_is_polled_separately(self, tmp_path):
         servicer = _make_leader(tmp_path, auto_reference=True)
-        servicer._tracker_ready_timeout_s = 0.03
-        servicer._tracker_stable_samples = 2
-        servicer._device.advance_timestamp = False
-
-        with pytest.raises(RuntimeError, match="did not become stable"):
-            servicer.Connect(None, None)
-        assert servicer._connected is False
-        assert servicer._t_begin_pos is None
-
-        # libsurvive stays alive after a failed readiness gate.  A retry must
-        # reuse that session instead of reopening the serial/tracker context.
-        servicer._device.advance_timestamp = True
-        servicer._tracker_ready_timeout_s = 1.0
+        servicer._device.advance_optical_timestamp = False
         servicer.Connect(None, None)
+
         assert servicer._connected is True
         assert servicer._device.connect_calls == 1
 
