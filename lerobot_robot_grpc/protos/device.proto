@@ -251,6 +251,15 @@ message TrackingReadiness {
     // visibility count.  Exposed for operator guidance and diagnostics only;
     // the leader remains the owner of readiness policy.
     uint32 recent_optical_measurement_count = 15;
+    // Number of spatially distinct scenes that libsurvive reports in its
+    // latest completed GlobalSceneSolver optimization.  This is not the
+    // Lighthouse-pose callback generation above.
+    uint32 global_scene_count = 16;
+    // Leader-owned minimum scene diversity required for a fresh calibration.
+    // Zero when an already-valid cached map covers the active cohort.
+    uint32 required_global_scene_count = 17;
+    // True when all active Lighthouses were seeded from a valid cached map.
+    bool using_cached_global_scene = 18;
 }
 
 message SetReferenceRequest {

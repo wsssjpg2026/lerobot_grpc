@@ -18,6 +18,8 @@ def _health(
     positions=None,
     visible_lighthouse_count: int = 2,
     recent_optical_measurement_count: int = 12,
+    global_scene_count: int = 4,
+    cached_map_lighthouses=(),
 ):
     positions = positions or {
         "LH0": (0.0, 0.0, 0.0),
@@ -27,6 +29,8 @@ def _health(
         "bridge_available": True,
         "context_epoch": epoch,
         "global_scene_generation": scene_generation,
+        "global_scene_count": global_scene_count,
+        "cached_map_lighthouses": cached_map_lighthouses,
         "lighthouse_cohort_generation": len(cohort),
         "discovered_lighthouses": cohort,
         "optical_lighthouse_count": visible_lighthouse_count,
@@ -88,6 +92,63 @@ def test_no_alignment_lease_before_new_global_scene_solve() -> None:
     assert result.token == ""
 
 
+def test_fresh_calibration_requires_four_spatially_distinct_scenes() -> None:
+    gate = TrackerReadinessGate(
+        cohort_stable_s=0.0,
+        map_stable_s=0.0,
+        stable_window_s=0.0,
+        stable_samples=1,
+    )
+    under_observed = _health(
+        scene_generation=3,
+        global_scene_count=3,
+    )
+
+    collecting = gate.update(under_observed, _sample(1), now_s=0.0)
+
+    assert collecting.state == (
+        device_pb2.TrackingReadinessState.
+        TRACKING_READINESS_STATE_SOLVING_GLOBAL_SCENE
+    )
+    assert collecting.token == ""
+    assert collecting.global_scene_count == 3
+    assert collecting.required_global_scene_count == 4
+    assert "3/4" in collecting.reason
+
+    sufficiently_observed = _health(
+        scene_generation=4,
+        global_scene_count=4,
+    )
+    ready = gate.update(sufficiently_observed, _sample(2), now_s=0.1)
+
+    assert ready.state == (
+        device_pb2.TrackingReadinessState.TRACKING_READINESS_STATE_READY
+    )
+    assert ready.token
+
+
+def test_complete_cached_map_does_not_require_new_calibration_scenes() -> None:
+    gate = TrackerReadinessGate(
+        cohort_stable_s=0.0,
+        map_stable_s=0.0,
+        stable_window_s=0.0,
+        stable_samples=1,
+    )
+    cached = _health(
+        scene_generation=2,
+        global_scene_count=0,
+        cached_map_lighthouses=("LH0", "LH1"),
+    )
+
+    ready = gate.update(cached, _sample(1), now_s=0.0)
+
+    assert ready.state == (
+        device_pb2.TrackingReadinessState.TRACKING_READINESS_STATE_READY
+    )
+    assert ready.using_cached_global_scene is True
+    assert ready.token
+
+
 def test_readiness_exposes_live_optical_visibility_for_operator_guidance() -> None:
     gate = TrackerReadinessGate(cohort_stable_s=0.0)
     health = _health(
@@ -104,6 +165,9 @@ def test_readiness_exposes_live_optical_visibility_for_operator_guidance() -> No
     assert result.recent_optical_measurement_count == 7
     assert proto.visible_lighthouse_count == 1
     assert proto.recent_optical_measurement_count == 7
+    assert proto.global_scene_count == 4
+    assert proto.required_global_scene_count == 4
+    assert proto.using_cached_global_scene is False
 
 
 def test_ready_requires_stable_cohort_and_distinct_optical_samples() -> None:

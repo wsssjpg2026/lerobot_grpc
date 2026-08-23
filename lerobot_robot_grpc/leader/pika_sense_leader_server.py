@@ -639,6 +639,8 @@ class PikaSenseServicer(LeaderServicer):
                 "bridge_available": True,
                 "context_epoch": 1,
                 "global_scene_generation": 1,
+                "global_scene_count": 4,
+                "cached_map_lighthouses": (),
                 "lighthouse_cohort_generation": 1,
                 "discovered_lighthouses": ("LH0",),
                 "lighthouses": {
@@ -656,6 +658,8 @@ class PikaSenseServicer(LeaderServicer):
                 "bridge_error": f"failed to read Pika tracking health: {exc}",
                 "context_epoch": 0,
                 "global_scene_generation": 0,
+                "global_scene_count": 0,
+                "cached_map_lighthouses": (),
                 "lighthouses": {},
                 "discovered_lighthouses": (),
             }
@@ -665,6 +669,8 @@ class PikaSenseServicer(LeaderServicer):
                 "bridge_error": "Pika SDK returned invalid tracking health",
                 "context_epoch": 0,
                 "global_scene_generation": 0,
+                "global_scene_count": 0,
+                "cached_map_lighthouses": (),
                 "lighthouses": {},
                 "discovered_lighthouses": (),
             }
@@ -685,14 +691,18 @@ class PikaSenseServicer(LeaderServicer):
         if snapshot.state != self._last_readiness_state_logged:
             self._last_readiness_state_logged = snapshot.state
             logger.info(
-                "TRACKER READINESS: %s — %s (context=%d scene=%d "
-                "expected=%s solved=%s visible=%d optical_measurements=%d)",
+                "TRACKER READINESS: %s — %s (context=%d generation=%d "
+                "gss_scenes=%d/%d cached=%s expected=%s solved=%s visible=%d "
+                "optical_measurements=%d)",
                 device_pb2.TrackingReadinessState.Name(snapshot.state).removeprefix(
                     "TRACKING_READINESS_STATE_"
                 ),
                 snapshot.reason,
                 snapshot.context_epoch,
                 snapshot.global_scene_generation,
+                snapshot.global_scene_count,
+                snapshot.required_global_scene_count,
+                snapshot.using_cached_global_scene,
                 list(snapshot.expected_lighthouses),
                 list(snapshot.solved_lighthouses),
                 snapshot.visible_lighthouse_count,

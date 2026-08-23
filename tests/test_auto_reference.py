@@ -133,6 +133,8 @@ class _FakeSense:
             "bridge_available": True,
             "context_epoch": 1,
             "global_scene_generation": 1,
+            "global_scene_count": 4,
+            "cached_map_lighthouses": (),
             "lighthouse_cohort_generation": 2,
             "discovered_lighthouses": ("LH0", "LH1"),
             "lighthouses": {

@@ -37,6 +37,9 @@ class ReadinessSnapshot:
     rotation_spread_rad: float = 0.0
     visible_lighthouse_count: int = 0
     recent_optical_measurement_count: int = 0
+    global_scene_count: int = 0
+    required_global_scene_count: int = 0
+    using_cached_global_scene: bool = False
 
     def to_proto(self) -> device_pb2.TrackingReadiness:
         return device_pb2.TrackingReadiness(
@@ -57,6 +60,9 @@ class ReadinessSnapshot:
             recent_optical_measurement_count=(
                 self.recent_optical_measurement_count
             ),
+            global_scene_count=self.global_scene_count,
+            required_global_scene_count=self.required_global_scene_count,
+            using_cached_global_scene=self.using_cached_global_scene,
         )
 
 
@@ -83,6 +89,7 @@ class TrackerReadinessGate:
         optical_stale_s: float = 0.1,
         map_position_delta_m: float = 0.005,
         map_rotation_delta_rad: float = np.radians(1.0),
+        fresh_global_scene_count: int = 4,
     ) -> None:
         self._cohort_stable_s = float(cohort_stable_s)
         self._map_stable_s = float(map_stable_s)
@@ -95,6 +102,9 @@ class TrackerReadinessGate:
         self._optical_stale_s = float(optical_stale_s)
         self._map_position_delta_m = float(map_position_delta_m)
         self._map_rotation_delta_rad = float(map_rotation_delta_rad)
+        self._fresh_global_scene_count = int(fresh_global_scene_count)
+        if self._fresh_global_scene_count <= 0:
+            raise ValueError("fresh_global_scene_count must be positive")
         self._salt = secrets.token_hex(16)
         self._samples: deque[_PoseSample] = deque()
         self._last_sequence: int | None = None
@@ -309,6 +319,19 @@ class TrackerReadinessGate:
         recent_optical_measurement_count = max(
             0, int(health.get("optical_measurement_count", 0) or 0)
         )
+        global_scene_count = max(
+            0, int(health.get("global_scene_count", 0) or 0)
+        )
+        cached_map_lighthouses = {
+            str(value)
+            for value in health.get("cached_map_lighthouses", ())
+        }
+        using_cached_global_scene = bool(cohort) and all(
+            name in cached_map_lighthouses for name in cohort
+        )
+        required_global_scene_count = (
+            0 if using_cached_global_scene else self._fresh_global_scene_count
+        )
 
         common = {
             "context_epoch": epoch,
@@ -321,6 +344,9 @@ class TrackerReadinessGate:
             "recent_optical_measurement_count": (
                 recent_optical_measurement_count
             ),
+            "global_scene_count": global_scene_count,
+            "required_global_scene_count": required_global_scene_count,
+            "using_cached_global_scene": using_cached_global_scene,
         }
         if not bool(health.get("bridge_available", False)):
             self._invalidate(
@@ -392,6 +418,17 @@ class TrackerReadinessGate:
             reason = self._invalidated_reason if self._invalidated_state else (
                 "waiting for a new successful global-scene solve; missing "
                 + ", ".join(missing or cohort)
+            )
+            return ReadinessSnapshot(state=current_state, reason=reason, **common)
+
+        if global_scene_count < required_global_scene_count:
+            current_state = (
+                self._invalidated_state
+                or state.TRACKING_READINESS_STATE_SOLVING_GLOBAL_SCENE
+            )
+            reason = self._invalidated_reason if self._invalidated_state else (
+                "collecting spatially distinct global scenes: "
+                f"{global_scene_count}/{required_global_scene_count}"
             )
             return ReadinessSnapshot(state=current_state, reason=reason, **common)
 

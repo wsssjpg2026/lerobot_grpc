@@ -164,8 +164,11 @@ conda run -n collection-client collection-teleop \
 Terminal 2 returns from device Connect as soon as hardware is established.
 Terminal 4 polls the leader-owned readiness policy and shows the current
 Lighthouse cohort/global-scene/stability phase. It asks the operator to
-arrange Pika and press Enter only after the global scene has a fresh solve and
-the one-second optical stability window has converged. Collection latches
+arrange Pika and press Enter only after the global scene has enough spatial
+diversity and the one-second optical stability window has converged. On a
+fresh calibration the client guides the operator through at least four
+``move to a different pose -> hold for 3-5 seconds`` captures. A valid cached
+map covering the active Lighthouse cohort skips that recapture. Collection latches
 the follower, captures follower reference then leader reference, verifies an
 identity delta, and only then releases motion. During teleoperation a rapid
 Pika gripper squeeze toggles clutch. Any optical interruption long enough to
