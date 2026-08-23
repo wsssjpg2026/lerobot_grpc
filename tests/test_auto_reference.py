@@ -10,6 +10,8 @@ Default mode keeps the #10 contract: the session starts disengaged and
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import pytest
 
@@ -142,6 +144,16 @@ class _FakeSense:
                     "rotation": (1.0, 0.0, 0.0, 0.0),
                 },
             },
+            "raw_optical_timestamp_s": self.raw_optical_timestamp_s,
+            "raw_optical_age_s": self.raw_optical_age_s,
+            "raw_optical_measurement_count": self.raw_optical_measurement_count,
+            "raw_optical_event_sequence": self.raw_optical_event_sequence,
+            "optical_timestamp_s": self.optical_timestamp_s,
+            "optical_age_s": self.optical_age_s,
+            "optical_measurement_count": self.optical_measurement_count,
+            "optical_lighthouse_count": self.optical_lighthouse_count,
+            "optical_event_sequence": self.optical_event_sequence,
+            "pose_confidence": self.pose_confidence,
         }
 
     def get_gripper_distance(self):
@@ -219,6 +231,44 @@ class TestAutoReference:
 
         assert servicer._connected is True
         assert servicer._device.connect_calls == 1
+
+    def test_readiness_sampling_does_not_depend_on_rpc_poll_rate(self, tmp_path):
+        """A slow collection client must observe, not drive, convergence."""
+        servicer = _make_leader(tmp_path, auto_reference=False)
+        servicer._readiness_gate = TrackerReadinessGate(
+            cohort_stable_s=0.0,
+            stable_window_s=0.05,
+            stable_samples=4,
+            position_spread_m=1.0,
+            rotation_spread_rad=np.pi,
+        )
+        servicer._readiness_sample_period_s = 0.005
+
+        # A non-None context models the real gRPC Connect path.  Do not call
+        # GetTrackingReadiness while the leader-owned sampler converges.
+        servicer.Connect(None, object())
+        try:
+            deadline = time.monotonic() + 0.5
+            while time.monotonic() < deadline:
+                if servicer._last_readiness.state == (
+                    device_pb2.TrackingReadinessState.
+                    TRACKING_READINESS_STATE_READY
+                ):
+                    break
+                time.sleep(0.005)
+            readiness = servicer.GetTrackingReadiness(None, object())
+            servicer.Disconnect(None, None)
+            assert servicer._readiness_thread is not None
+            assert servicer._readiness_thread.is_alive()
+        finally:
+            servicer._stop_readiness_sampler()
+
+        assert readiness.state == (
+            device_pb2.TrackingReadinessState.TRACKING_READINESS_STATE_READY
+        )
+        assert readiness.stable_sample_count >= 4
+        assert readiness.stable_window_s >= 0.05
+        assert servicer._readiness_thread is None
 
     def test_runtime_stale_pose_holds_until_stable_button_recovery(self, tmp_path):
         command_state = [0]

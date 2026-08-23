@@ -266,6 +266,10 @@ class PikaSenseServicer(LeaderServicer):
     _DECODER_RESTART_COOLDOWN_S = 10.0
     _DECODER_RESTART_MAX_ATTEMPTS = 2
     _DECODER_REDISCOVERY_GRACE_S = 5.0
+    # Readiness convergence belongs to the hardware service.  Collection may
+    # poll at only 5 Hz, while the 20-sample/1-second stability policy needs a
+    # higher internal sampling rate to be satisfiable.
+    _READINESS_SAMPLE_PERIOD_S = 0.05
 
     def __init__(
         self,
@@ -385,6 +389,10 @@ class PikaSenseServicer(LeaderServicer):
             reason="Pika hardware has not started",
         )
         self._last_readiness_state_logged: int | None = None
+        self._readiness_sample_period_s = self._READINESS_SAMPLE_PERIOD_S
+        self._readiness_stop_event: threading.Event | None = None
+        self._readiness_thread: threading.Thread | None = None
+        self._last_tracker_health_snapshot: dict[str, Any] | None = None
         self._last_seen_tracker_source_ts: float | None = None
         self._last_seen_tracker_raw_optical_ts: float | None = None
         self._last_seen_tracker_optical_ts: float | None = None
@@ -532,28 +540,38 @@ class PikaSenseServicer(LeaderServicer):
             )
             return None
         if self._tracker_health_enabled:
+            health = self._tracker_health_facts()
+            self._last_tracker_health_snapshot = health
             try:
-                raw_optical_timestamp_s = float(pose.raw_optical_timestamp_s)
-                raw_optical_age_s = float(pose.raw_optical_age_s)
-                raw_optical_measurement_count = int(
-                    pose.raw_optical_measurement_count
+                raw_optical_timestamp_s = float(
+                    health["raw_optical_timestamp_s"]
                 )
-                raw_optical_event_sequence = int(pose.raw_optical_event_sequence)
-                optical_timestamp_s = float(pose.optical_timestamp_s)
-                optical_age_s = float(pose.optical_age_s)
-                optical_measurement_count = int(pose.optical_measurement_count)
-                optical_lighthouse_count = int(pose.optical_lighthouse_count)
-                optical_event_sequence = int(pose.optical_event_sequence)
-                raw_confidence = getattr(pose, "pose_confidence", None)
+                raw_optical_age_s = float(health["raw_optical_age_s"])
+                raw_optical_measurement_count = int(
+                    health["raw_optical_measurement_count"]
+                )
+                raw_optical_event_sequence = int(
+                    health["raw_optical_event_sequence"]
+                )
+                optical_timestamp_s = float(health["optical_timestamp_s"])
+                optical_age_s = float(health["optical_age_s"])
+                optical_measurement_count = int(
+                    health["optical_measurement_count"]
+                )
+                optical_lighthouse_count = int(
+                    health["optical_lighthouse_count"]
+                )
+                optical_event_sequence = int(health["optical_event_sequence"])
+                raw_confidence = health.get("pose_confidence")
                 pose_confidence = (
                     None if raw_confidence is None else float(raw_confidence)
                 )
-            except (AttributeError, TypeError, ValueError):
+            except (KeyError, TypeError, ValueError):
                 now = time.monotonic()
                 if now - self._last_optical_health_log_monotonic >= 1.0:
                     self._last_optical_health_log_monotonic = now
                     logger.error(
-                        "Tracker pose has unavailable libsurvive optical health "
+                        "Tracker health has unavailable libsurvive optical "
                         "fields; refusing to treat fused IMU pose as optically "
                         "fresh. Verify that the updated pika_sdk native extension "
                         "is installed, then restart the Pika leader."
@@ -611,9 +629,7 @@ class PikaSenseServicer(LeaderServicer):
             return None
         return sample.position, sample.rotation
 
-    def _tracker_health_facts(
-        self, sample: TrackerSample | None
-    ) -> dict[str, Any]:
+    def _tracker_health_facts(self) -> dict[str, Any]:
         """Read generic SDK facts; the readiness gate applies policy."""
         if not self._tracker_health_enabled:
             # Explicit test/debug bypass only.  Production always requires the
@@ -654,8 +670,11 @@ class PikaSenseServicer(LeaderServicer):
         return health
 
     def _update_tracking_readiness(self) -> ReadinessSnapshot:
+        self._last_tracker_health_snapshot = None
         sample = self._read_tracker_sample()
-        health = self._tracker_health_facts(sample)
+        health = self._last_tracker_health_snapshot
+        if health is None:
+            health = self._tracker_health_facts()
         snapshot = self._readiness_gate.update(
             health,
             sample,
@@ -677,6 +696,56 @@ class PikaSenseServicer(LeaderServicer):
                 list(snapshot.solved_lighthouses),
             )
         return snapshot
+
+    def _readiness_sampler_loop(self, stop_event: threading.Event) -> None:
+        """Advance readiness independently from client RPC polling."""
+        while not stop_event.is_set():
+            try:
+                with self._lock:
+                    if not self._hardware_started:
+                        return
+                    self._update_tracking_readiness()
+            except Exception as exc:
+                logger.exception("Tracker readiness sampler failed")
+                with self._lock:
+                    self._last_readiness = ReadinessSnapshot(
+                        state=(
+                            device_pb2.TrackingReadinessState.
+                            TRACKING_READINESS_STATE_ERROR
+                        ),
+                        reason=f"Tracker readiness sampler failed: {exc}",
+                    )
+                return
+            stop_event.wait(self._readiness_sample_period_s)
+
+    def _start_readiness_sampler(self) -> None:
+        with self._lock:
+            if (
+                self._readiness_thread is not None
+                and self._readiness_thread.is_alive()
+            ):
+                return
+            stop_event = threading.Event()
+            thread = threading.Thread(
+                target=self._readiness_sampler_loop,
+                args=(stop_event,),
+                name="pika-tracker-readiness",
+                daemon=True,
+            )
+            self._readiness_stop_event = stop_event
+            self._readiness_thread = thread
+            thread.start()
+
+    def _stop_readiness_sampler(self) -> None:
+        with self._lock:
+            stop_event = self._readiness_stop_event
+            thread = self._readiness_thread
+            self._readiness_stop_event = None
+            self._readiness_thread = None
+            if stop_event is not None:
+                stop_event.set()
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
 
     @staticmethod
     def _rotation_distance_rad(a: np.ndarray, b: np.ndarray) -> float:
@@ -1975,12 +2044,16 @@ class PikaSenseServicer(LeaderServicer):
                 self._calib_step = 0
                 self._calib_data = {}
             calibrated = self._calibrated
+        if context is not None:
+            self._start_readiness_sampler()
         # Return calibration status — the client auto-triggers Calibrate
         # RPC if NEED_TO_CALIBRATE (via connect(calibrate=True)).
         if context is None and self._auto_reference:
             # Direct unit-test calls have no client adapter to perform the
             # readiness poll.  The real gRPC Connect path always returns
-            # immediately and GRPCLeader polls GetTrackingReadiness.
+            # immediately and the leader-owned sampler advances readiness.
+            with self._lock:
+                self._update_tracking_readiness()
             self.GetTrackingReadiness(None, None)
         if calibrated:
             return device_pb2.CalibrationInfo(
@@ -2000,7 +2073,10 @@ class PikaSenseServicer(LeaderServicer):
                     ),
                     reason="Pika hardware has not started",
                 )
-            snapshot = self._update_tracking_readiness()
+            # This RPC observes the hardware-owned state machine.  It must not
+            # drive sample accumulation, otherwise readiness depends on an
+            # arbitrary client poll rate.
+            snapshot = self._last_readiness
             if (
                 self._auto_reference
                 and snapshot.state
@@ -2067,10 +2143,13 @@ class PikaSenseServicer(LeaderServicer):
     def Disconnect(self, request, context):
         # Unblock any running calibration step thread.
         self._calibrate_done.set()
-        self._connected = False
+        with self._lock:
+            self._connected = False
         # Keep hardware alive — pysurvive/libsurvive context cannot be
-        # recreated after destruction.  The next Connect() call reuses
-        # the existing tracker session and resets per-session state.
+        # recreated after destruction.  The readiness sampler also remains
+        # alive so optical loss/map changes cannot hide between client
+        # sessions.  The next Connect() reuses this continuously monitored
+        # tracker session and resets only per-session teleoperation state.
         logger.info("Client disconnected; hardware kept alive for reuse.")
         return Empty()
 
