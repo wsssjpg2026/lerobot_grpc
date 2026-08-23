@@ -78,6 +78,7 @@ def _make_leader(tmp_path, command_provider):
     servicer._tracker_device = "FAKE"
     servicer._readiness_gate = TrackerReadinessGate(
         cohort_stable_s=0.0,
+        map_stable_s=0.0,
         stable_window_s=0.0,
         stable_samples=1,
         position_spread_m=1.0,

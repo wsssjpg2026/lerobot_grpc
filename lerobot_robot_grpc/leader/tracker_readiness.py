@@ -69,6 +69,7 @@ class TrackerReadinessGate:
         self,
         *,
         cohort_stable_s: float = 2.0,
+        map_stable_s: float = 15.0,
         stable_window_s: float = 1.0,
         stable_samples: int = 20,
         position_spread_m: float = 0.005,
@@ -78,6 +79,9 @@ class TrackerReadinessGate:
         map_rotation_delta_rad: float = np.radians(1.0),
     ) -> None:
         self._cohort_stable_s = float(cohort_stable_s)
+        self._map_stable_s = float(map_stable_s)
+        if self._map_stable_s < 0.0:
+            raise ValueError("map_stable_s must be non-negative")
         self._stable_window_s = float(stable_window_s)
         self._stable_samples = int(stable_samples)
         self._position_spread_m = float(position_spread_m)
@@ -90,12 +94,45 @@ class TrackerReadinessGate:
         self._last_sequence: int | None = None
         self._observed_cohort: tuple[str, ...] = ()
         self._cohort_changed_s: float | None = None
+        self._observed_map_identity: tuple[int, tuple[str, ...]] | None = None
+        self._observed_scene_generation: int | None = None
+        self._map_changed_s: float | None = None
         self._ready_identity: tuple[int, tuple[str, ...]] | None = None
         self._ready_scene: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         self._readiness_generation = 0
         self._ready_token = ""
         self._invalidated_state: int | None = None
         self._invalidated_reason = ""
+
+    def _reset_map_settling(self) -> None:
+        self._observed_map_identity = None
+        self._observed_scene_generation = None
+        self._map_changed_s = None
+
+    def _observe_complete_map(
+        self,
+        *,
+        epoch: int,
+        cohort: tuple[str, ...],
+        scene_generation: int,
+        now_s: float,
+    ) -> float:
+        """Return how long the current complete global map has been quiet."""
+        identity = (epoch, cohort)
+        if (
+            identity != self._observed_map_identity
+            or scene_generation != self._observed_scene_generation
+        ):
+            self._observed_map_identity = identity
+            self._observed_scene_generation = scene_generation
+            self._map_changed_s = float(now_s)
+            # Tracker stability is meaningful only after the map that defines
+            # its coordinates has stopped changing.
+            self._samples.clear()
+            self._last_sequence = None
+        if self._map_changed_s is None:
+            self._map_changed_s = float(now_s)
+        return max(0.0, float(now_s) - self._map_changed_s)
 
     @staticmethod
     def _rotation_distance(a: np.ndarray, b: np.ndarray) -> float:
@@ -289,6 +326,7 @@ class TrackerReadinessGate:
         if cohort != self._observed_cohort:
             self._observed_cohort = cohort
             self._cohort_changed_s = float(now_s)
+            self._reset_map_settling()
             self._samples.clear()
             self._last_sequence = None
             if self._ready_identity is not None and cohort != self._ready_identity[1]:
@@ -340,6 +378,28 @@ class TrackerReadinessGate:
                 + ", ".join(missing or cohort)
             )
             return ReadinessSnapshot(state=current_state, reason=reason, **common)
+
+        map_age = self._observe_complete_map(
+            epoch=epoch,
+            cohort=cohort,
+            scene_generation=scene_generation,
+            now_s=now_s,
+        )
+        if self._ready_identity is None and map_age < self._map_stable_s:
+            current_state = (
+                self._invalidated_state
+                or state.TRACKING_READINESS_STATE_SOLVING_GLOBAL_SCENE
+            )
+            reason = self._invalidated_reason if self._invalidated_state else (
+                "Lighthouse global map settling "
+                f"{map_age:.1f}/{self._map_stable_s:.1f}s after scene "
+                f"generation {scene_generation}"
+            )
+            return ReadinessSnapshot(
+                state=current_state,
+                reason=reason,
+                **{**common, "readiness_generation": self._readiness_generation},
+            )
 
         health_reason = None
         if sample is None:

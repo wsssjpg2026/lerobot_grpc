@@ -10,6 +10,7 @@ Default mode keeps the #10 contract: the session starts disengaged and
 
 from __future__ import annotations
 
+import logging
 import time
 
 import numpy as np
@@ -184,6 +185,7 @@ def _make_leader(
     servicer._tracker_device = "FAKE"
     servicer._readiness_gate = TrackerReadinessGate(
         cohort_stable_s=0.0,
+        map_stable_s=0.0,
         stable_window_s=0.0,
         stable_samples=1,
         position_spread_m=1.0,
@@ -237,6 +239,7 @@ class TestAutoReference:
         servicer = _make_leader(tmp_path, auto_reference=False)
         servicer._readiness_gate = TrackerReadinessGate(
             cohort_stable_s=0.0,
+            map_stable_s=0.0,
             stable_window_s=0.05,
             stable_samples=4,
             position_spread_m=1.0,
@@ -818,6 +821,30 @@ class TestLateTrackerDiscovery:
 
 
 class TestDefaultContract:
+    def test_periodic_optical_age_uses_monotonic_clock(self, tmp_path, caplog):
+        """The operator diagnostic must report milliseconds, not epoch time."""
+        servicer = _make_leader(tmp_path, auto_reference=False)
+        servicer.Connect(None, None)
+        caplog.clear()
+        caplog.set_level(
+            logging.INFO,
+            logger=(
+                "lerobot_robot_grpc.leader.pika_sense_leader_server"
+            ),
+        )
+
+        servicer._compute_action()
+
+        tracker_log = next(
+            record.getMessage()
+            for record in caplog.records
+            if record.getMessage().startswith("TRACKER:")
+        )
+        optical_age_ms = int(
+            tracker_log.split("optical_age=", 1)[1].split("ms", 1)[0]
+        )
+        assert optical_age_ms < 10_000
+
     def test_collection_connect_checks_optical_health_not_hand_stillness(self, tmp_path):
         """Collection performs its own later Enter/reference alignment.
 

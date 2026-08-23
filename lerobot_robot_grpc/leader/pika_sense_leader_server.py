@@ -373,6 +373,7 @@ class PikaSenseServicer(LeaderServicer):
         )
         self._readiness_gate = TrackerReadinessGate(
             cohort_stable_s=2.0,
+            map_stable_s=15.0,
             stable_window_s=1.0,
             stable_samples=20,
             position_spread_m=0.005,
@@ -1683,7 +1684,11 @@ class PikaSenseServicer(LeaderServicer):
                     f"{readiness.reason}"
                 )
             tracker = self._runtime_tracker_pose()
-            now = time.time()
+            # TrackerSample.received_monotonic_s is a monotonic timestamp.
+            # Keep diagnostics and their throttle in the same clock domain;
+            # subtracting it from time.time() reports roughly the Unix epoch
+            # as an optical age even though runtime safety remains healthy.
+            now = time.monotonic()
 
             # --- Clutch edge (Pika quick gripper squeeze, #10) --------------
             # Official /teleop_trigger semantics: any Command change toggles
@@ -1725,7 +1730,7 @@ class PikaSenseServicer(LeaderServicer):
                         else:
                             # Collection mode owns the cross-endpoint commit.
                             # Publish an explicit state and stay disengaged
-                            # until follower -> leader references succeed.
+                            # until leader -> follower references succeed.
                             self._reference_confirmation_pending = True
                             self._clutched = False
                             self._pending_relatch = True
