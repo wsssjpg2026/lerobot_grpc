@@ -686,7 +686,7 @@ class PikaSenseServicer(LeaderServicer):
             self._last_readiness_state_logged = snapshot.state
             logger.info(
                 "TRACKER READINESS: %s — %s (context=%d scene=%d "
-                "expected=%s solved=%s)",
+                "expected=%s solved=%s visible=%d optical_measurements=%d)",
                 device_pb2.TrackingReadinessState.Name(snapshot.state).removeprefix(
                     "TRACKING_READINESS_STATE_"
                 ),
@@ -695,6 +695,8 @@ class PikaSenseServicer(LeaderServicer):
                 snapshot.global_scene_generation,
                 list(snapshot.expected_lighthouses),
                 list(snapshot.solved_lighthouses),
+                snapshot.visible_lighthouse_count,
+                snapshot.recent_optical_measurement_count,
             )
         return snapshot
 

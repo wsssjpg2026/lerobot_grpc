@@ -243,6 +243,14 @@ message TrackingReadiness {
     float stable_window_s = 11;
     float position_spread_m = 12;
     float rotation_spread_rad = 13;
+    // Number of distinct Lighthouse channels contributing decoded optical
+    // measurements in the SDK's recent health window.  This is live
+    // visibility, not the number of base stations discovered at startup.
+    uint32 visible_lighthouse_count = 14;
+    // Number of recent decoded sync/sweep measurements backing the live
+    // visibility count.  Exposed for operator guidance and diagnostics only;
+    // the leader remains the owner of readiness policy.
+    uint32 recent_optical_measurement_count = 15;
 }
 
 message SetReferenceRequest {

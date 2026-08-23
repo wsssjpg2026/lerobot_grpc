@@ -35,6 +35,8 @@ class ReadinessSnapshot:
     stable_window_s: float = 0.0
     position_spread_m: float = 0.0
     rotation_spread_rad: float = 0.0
+    visible_lighthouse_count: int = 0
+    recent_optical_measurement_count: int = 0
 
     def to_proto(self) -> device_pb2.TrackingReadiness:
         return device_pb2.TrackingReadiness(
@@ -51,6 +53,10 @@ class ReadinessSnapshot:
             stable_window_s=self.stable_window_s,
             position_spread_m=self.position_spread_m,
             rotation_spread_rad=self.rotation_spread_rad,
+            visible_lighthouse_count=self.visible_lighthouse_count,
+            recent_optical_measurement_count=(
+                self.recent_optical_measurement_count
+            ),
         )
 
 
@@ -297,6 +303,12 @@ class TrackerReadinessGate:
         cohort = tuple(sorted(str(v) for v in health.get("discovered_lighthouses", ())))
         scene = self._scene(health)
         solved = tuple(sorted(scene))
+        visible_lighthouse_count = max(
+            0, int(health.get("optical_lighthouse_count", 0) or 0)
+        )
+        recent_optical_measurement_count = max(
+            0, int(health.get("optical_measurement_count", 0) or 0)
+        )
 
         common = {
             "context_epoch": epoch,
@@ -305,6 +317,10 @@ class TrackerReadinessGate:
             "readiness_generation": self._readiness_generation,
             "expected_lighthouses": cohort,
             "solved_lighthouses": solved,
+            "visible_lighthouse_count": visible_lighthouse_count,
+            "recent_optical_measurement_count": (
+                recent_optical_measurement_count
+            ),
         }
         if not bool(health.get("bridge_available", False)):
             self._invalidate(

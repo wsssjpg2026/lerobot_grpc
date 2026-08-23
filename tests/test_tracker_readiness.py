@@ -16,6 +16,8 @@ def _health(
     scene_generation: int = 1,
     cohort=("LH0", "LH1"),
     positions=None,
+    visible_lighthouse_count: int = 2,
+    recent_optical_measurement_count: int = 12,
 ):
     positions = positions or {
         "LH0": (0.0, 0.0, 0.0),
@@ -27,6 +29,8 @@ def _health(
         "global_scene_generation": scene_generation,
         "lighthouse_cohort_generation": len(cohort),
         "discovered_lighthouses": cohort,
+        "optical_lighthouse_count": visible_lighthouse_count,
+        "optical_measurement_count": recent_optical_measurement_count,
         "lighthouses": {
             name: {
                 "position": positions[name],
@@ -82,6 +86,24 @@ def test_no_alignment_lease_before_new_global_scene_solve() -> None:
         TRACKING_READINESS_STATE_SOLVING_GLOBAL_SCENE
     )
     assert result.token == ""
+
+
+def test_readiness_exposes_live_optical_visibility_for_operator_guidance() -> None:
+    gate = TrackerReadinessGate(cohort_stable_s=0.0)
+    health = _health(
+        scene_generation=1,
+        positions={"LH0": (0.0, 0.0, 0.0)},
+        visible_lighthouse_count=1,
+        recent_optical_measurement_count=7,
+    )
+
+    result = gate.update(health, _sample(1), now_s=0.0)
+    proto = result.to_proto()
+
+    assert result.visible_lighthouse_count == 1
+    assert result.recent_optical_measurement_count == 7
+    assert proto.visible_lighthouse_count == 1
+    assert proto.recent_optical_measurement_count == 7
 
 
 def test_ready_requires_stable_cohort_and_distinct_optical_samples() -> None:
