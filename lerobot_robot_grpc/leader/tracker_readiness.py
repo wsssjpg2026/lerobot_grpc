@@ -427,7 +427,7 @@ class TrackerReadinessGate:
                 or state.TRACKING_READINESS_STATE_SOLVING_GLOBAL_SCENE
             )
             reason = self._invalidated_reason if self._invalidated_state else (
-                "collecting spatially distinct global scenes: "
+                "latest successful global solve used spatial scenes: "
                 f"{global_scene_count}/{required_global_scene_count}"
             )
             return ReadinessSnapshot(state=current_state, reason=reason, **common)
