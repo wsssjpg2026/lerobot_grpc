@@ -266,6 +266,12 @@ class PikaSenseServicer(LeaderServicer):
     _DECODER_RESTART_MAX_ATTEMPTS = 2
     _DECODER_RESTART_TIMEOUT_S = 8.0
     _DECODER_REDISCOVERY_GRACE_S = 5.0
+    # A few trailing decoded sweeps can arrive after an optical hold. Do not
+    # expose those as LOST -> RECOVERING -> LOST. Raw photodiode return is
+    # announced immediately, while decoded-only recovery must remain live for
+    # this short continuous prefix of the full convergence window.
+    _RECOVERY_ANNOUNCE_MIN_SAMPLES = 5
+    _RECOVERY_ANNOUNCE_MIN_WINDOW_S = 0.2
     # Readiness convergence belongs to the hardware service.  Collection may
     # poll at only 5 Hz, while the 20-sample/1-second stability policy needs a
     # higher internal sampling rate to be satisfiable.
@@ -1149,6 +1155,25 @@ class PikaSenseServicer(LeaderServicer):
             )
         if ready:
             self._tracker_recovery_ready = True
+
+    def _decoded_recovery_is_established(self) -> bool:
+        """Return whether decoded recovery is continuous enough to announce."""
+        samples = self._tracker_recovery_samples
+        required_samples = min(
+            self._RECOVERY_ANNOUNCE_MIN_SAMPLES,
+            self._tracker_recheck_samples,
+        )
+        if len(samples) < required_samples:
+            return False
+        required_window_s = min(
+            self._RECOVERY_ANNOUNCE_MIN_WINDOW_S,
+            self._tracker_recheck_window_s,
+        )
+        return (
+            samples[-1].received_monotonic_s
+            - samples[0].received_monotonic_s
+            >= required_window_s
+        )
 
     @staticmethod
     def _tracker_sample_dts(
@@ -2125,7 +2150,8 @@ class PikaSenseServicer(LeaderServicer):
                     device_pb2.TrackingState.TRACKING_STATE_CONFIRM_REQUIRED
                 )
             elif self._reference_required and (
-                self._raw_optical_reacquiring or self._tracker_recovery_samples
+                self._raw_optical_reacquiring
+                or self._decoded_recovery_is_established()
             ):
                 self._last_tracking_state = (
                     device_pb2.TrackingState.TRACKING_STATE_RECOVERING

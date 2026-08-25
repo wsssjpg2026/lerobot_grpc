@@ -769,6 +769,49 @@ class TestAutoReference:
             feature.tracking_state for feature in lost
         } == {device_pb2.TrackingState.TRACKING_STATE_LOST}
 
+    def test_one_late_decoded_sample_does_not_flicker_lost_to_recovering(
+        self, tmp_path
+    ):
+        """One trailing sweep is not evidence that tracking has returned."""
+        servicer = _make_leader(
+            tmp_path,
+            auto_reference=True,
+            cumulative_clutch=True,
+        )
+        servicer._tracker_health_enabled = True
+        servicer._tracker_recheck_samples = 3
+        servicer.Connect(None, None)
+        servicer._compute_action()
+
+        servicer._device.advance_optical_timestamp = False
+        servicer._device.advance_raw_optical_timestamp = False
+        servicer._device.optical_age_s = 0.2
+        servicer._device.raw_optical_age_s = 0.2
+        servicer._device.raw_optical_measurement_count = 0
+        servicer._last_fresh_received_monotonic -= 0.6
+        lost = list(servicer.GetAction(None, None))
+        assert {
+            feature.tracking_state for feature in lost
+        } == {device_pb2.TrackingState.TRACKING_STATE_LOST}
+
+        # Match the captured LOST -> RECOVERING -> LOST trace: one final
+        # decoded event arrives after the hold, but raw visibility never
+        # returns and the next frame is stale again.
+        servicer._device.advance_optical_timestamp = True
+        servicer._device.optical_age_s = 0.0
+        trailing = list(servicer.GetAction(None, None))
+        servicer._device.advance_optical_timestamp = False
+        servicer._device.optical_age_s = 0.2
+        servicer._last_fresh_received_monotonic -= 0.6
+        stale_again = list(servicer.GetAction(None, None))
+
+        assert {
+            feature.tracking_state for feature in trailing
+        } == {device_pb2.TrackingState.TRACKING_STATE_LOST}
+        assert {
+            feature.tracking_state for feature in stale_again
+        } == {device_pb2.TrackingState.TRACKING_STATE_LOST}
+
     def test_slow_tracker_restart_does_not_block_get_action(self, tmp_path):
         """Context teardown must run outside the latency-critical action RPC."""
         servicer = _make_leader(
