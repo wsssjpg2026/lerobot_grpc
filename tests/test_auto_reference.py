@@ -11,6 +11,7 @@ Default mode keeps the #10 contract: the session starts disengaged and
 from __future__ import annotations
 
 import logging
+import threading
 import time
 
 import numpy as np
@@ -696,6 +697,80 @@ class TestAutoReference:
         assert servicer._clutched is False
         assert {
             feature.tracking_state for feature in recovering
+        } == {device_pb2.TrackingState.TRACKING_STATE_RECOVERING}
+
+    def test_slow_tracker_restart_does_not_block_get_action(self, tmp_path):
+        """Context teardown must run outside the latency-critical action RPC."""
+        servicer = _make_leader(
+            tmp_path,
+            auto_reference=True,
+            cumulative_clutch=True,
+        )
+        servicer._tracker_health_enabled = True
+        servicer.Connect(None, None)
+        servicer._compute_action()
+
+        servicer._device.advance_timestamp = False
+        servicer._device.advance_optical_timestamp = False
+        servicer._device.advance_raw_optical_timestamp = False
+        servicer._device.optical_age_s = 0.2
+        servicer._device.raw_optical_age_s = 0.2
+        servicer._device.raw_optical_measurement_count = 0
+        servicer._last_fresh_received_monotonic -= 0.6
+        servicer._decoder_restart_without_raw_after_s = 0.0
+
+        restart_started = threading.Event()
+        release_restart = threading.Event()
+
+        def slow_restart():
+            servicer._device.restart_tracker_calls += 1
+            restart_started.set()
+            release_restart.wait(timeout=2.0)
+            return True
+
+        servicer._device.restart_vive_tracker = slow_restart
+        action_done = threading.Event()
+        action_features = []
+
+        def request_action():
+            action_features.extend(servicer.GetAction(None, None))
+            action_done.set()
+
+        request_thread = threading.Thread(target=request_action, daemon=True)
+        request_thread.start()
+        repeated_action_done = threading.Event()
+        repeated_action_features = []
+
+        def request_repeated_action():
+            repeated_action_features.extend(servicer.GetAction(None, None))
+            repeated_action_done.set()
+
+        repeated_request_thread = None
+        try:
+            assert restart_started.wait(timeout=0.5)
+            returned_while_restart_blocked = action_done.wait(timeout=0.1)
+            repeated_request_thread = threading.Thread(
+                target=request_repeated_action,
+                daemon=True,
+            )
+            repeated_request_thread.start()
+            repeated_returned_while_restart_blocked = (
+                repeated_action_done.wait(timeout=0.1)
+            )
+        finally:
+            release_restart.set()
+            request_thread.join(timeout=1.0)
+            if repeated_request_thread is not None:
+                repeated_request_thread.join(timeout=1.0)
+
+        assert returned_while_restart_blocked
+        assert repeated_returned_while_restart_blocked
+        assert servicer._device.restart_tracker_calls == 1
+        assert {
+            feature.tracking_state for feature in action_features
+        } == {device_pb2.TrackingState.TRACKING_STATE_RECOVERING}
+        assert {
+            feature.tracking_state for feature in repeated_action_features
         } == {device_pb2.TrackingState.TRACKING_STATE_RECOVERING}
 
     def test_collection_recovery_stays_confirmable_while_operator_repositions(

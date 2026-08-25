@@ -415,6 +415,10 @@ class PikaSenseServicer(LeaderServicer):
         self._decoder_restart_attempts = 0
         self._last_decoder_restart_monotonic: float | None = None
         self._decoder_restart_discovery_deadline: float | None = None
+        self._decoder_restart_state_lock = threading.Lock()
+        self._decoder_restart_active = threading.Event()
+        self._decoder_restart_thread: threading.Thread | None = None
+        self._decoder_restart_result: bool | None = None
         self._last_tracking_state = (
             device_pb2.TrackingState.TRACKING_STATE_HELD
         )
@@ -525,6 +529,13 @@ class PikaSenseServicer(LeaderServicer):
         The separate libsurvive light timestamp/counts are therefore part of
         correctness, not optional telemetry.
         """
+        # ``Sense.restart_vive_tracker`` owns the SDK's tracker lock while it
+        # tears down and reconstructs libsurvive.  Reading through that lock
+        # here would turn a recovery operation into a stalled GetAction RPC.
+        # During the restart, publication deliberately stays on the last safe
+        # action and no SDK tracker method is touched.
+        if self._decoder_restart_active.is_set():
+            return None
         if not self._try_discover_tracker():
             return None
         pose = self._device.get_pose(self._tracker_device)
@@ -677,6 +688,13 @@ class PikaSenseServicer(LeaderServicer):
         return health
 
     def _update_tracking_readiness(self) -> ReadinessSnapshot:
+        self._consume_tracker_decoder_restart()
+        if self._decoder_restart_active.is_set():
+            # The runtime action state exposes RECOVERING.  Preserve the most
+            # recent readiness snapshot until the replacement context exists;
+            # querying SDK health here would wait on the same tracker lock as
+            # the background restart and block GetAction/readiness sampling.
+            return self._last_readiness
         self._last_tracker_health_snapshot = None
         sample = self._read_tracker_sample()
         health = self._last_tracker_health_snapshot
@@ -1154,6 +1172,8 @@ class PikaSenseServicer(LeaderServicer):
         the raw monitor itself wedges and therefore cannot provide that
         evidence.  Both paths share the same bounded attempt/cooldown policy.
         """
+        if self._decoder_restart_active.is_set():
+            return True
         if raw_light_visible:
             if self._raw_optical_reacquiring_since is None:
                 self._raw_optical_reacquiring_since = now
@@ -1198,14 +1218,69 @@ class PikaSenseServicer(LeaderServicer):
             self._decoder_restart_attempts,
             self._DECODER_RESTART_MAX_ATTEMPTS,
         )
+        # Mark RECOVERING before starting the worker.  The worker may spend
+        # several seconds joining libsurvive threads; GetAction must continue
+        # returning the frozen action throughout that interval.
+        self._raw_optical_reacquiring = True
+        self._raw_optical_reacquiring_since = None
+        self._last_tracker_health_reason = "tracker decoder restart in progress"
+
+        with self._decoder_restart_state_lock:
+            if self._decoder_restart_active.is_set():
+                return True
+            self._decoder_restart_result = None
+            self._decoder_restart_active.set()
+            thread = threading.Thread(
+                target=self._restart_tracker_decoder_worker,
+                args=(restart,),
+                name="pika-tracker-restart",
+                daemon=True,
+            )
+            self._decoder_restart_thread = thread
+            try:
+                thread.start()
+            except Exception:
+                self._decoder_restart_thread = None
+                self._decoder_restart_active.clear()
+                logger.exception(
+                    "TRACKER HEALTH: failed to start decoder restart worker"
+                )
+                self._last_tracker_health_reason = (
+                    "tracker decoder restart worker failed to start"
+                )
+                return False
+        return True
+
+    def _restart_tracker_decoder_worker(self, restart) -> None:
+        """Run the potentially slow SDK context rebuild off the RPC thread."""
         try:
             restarted = bool(restart())
         except Exception:
             logger.exception("TRACKER HEALTH: decoder context restart failed")
             restarted = False
+        with self._decoder_restart_state_lock:
+            self._decoder_restart_result = restarted
+
+    def _consume_tracker_decoder_restart(self) -> bool:
+        """Apply a completed restart from a normal serialized service call."""
+        with self._decoder_restart_state_lock:
+            if (
+                not self._decoder_restart_active.is_set()
+                or self._decoder_restart_result is None
+            ):
+                return False
+            restarted = self._decoder_restart_result
+            self._decoder_restart_result = None
+            self._decoder_restart_thread = None
+            self._decoder_restart_active.clear()
+
         if not restarted:
             self._last_tracker_health_reason = "tracker decoder restart failed"
-            return False
+            logger.error(
+                "TRACKER HEALTH: decoder context restart completed without "
+                "a usable tracker backend."
+            )
+            return True
 
         # Never reuse PoseData from the destroyed context.  Device discovery
         # and all freshness baselines restart while the published action stays
@@ -1228,10 +1303,21 @@ class PikaSenseServicer(LeaderServicer):
         self._last_tracker_health_reason = (
             "tracker decoder restarted; waiting for fresh optical poses"
         )
+        logger.info(
+            "TRACKER HEALTH: decoder context restart completed; waiting for "
+            "Tracker rediscovery and fresh optical poses."
+        )
         return True
 
     def _runtime_tracker_pose(self) -> tuple[np.ndarray, np.ndarray] | None:
         """Return only a fresh, plausible pose; otherwise freeze publication."""
+        self._consume_tracker_decoder_restart()
+        if self._decoder_restart_active.is_set():
+            self._raw_optical_reacquiring = True
+            self._last_tracker_health_reason = (
+                "tracker decoder restart in progress"
+            )
+            return None
         sample = self._read_tracker_sample()
         if sample is not None and not self._tracker_health_enabled:
             self._prime_runtime_tracker(sample)
