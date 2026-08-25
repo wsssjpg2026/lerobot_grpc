@@ -257,11 +257,13 @@ class PikaSenseServicer(LeaderServicer):
     _MOTION_MAX_SPEED_RATIO = 6.0
     _REFERENCE_FAULT_OPTICAL = "optical"
     _REFERENCE_FAULT_POSE_DISCONTINUITY = "pose-discontinuity"
-    # Rebuild a wedged Gen2 tracker only when raw photodiode hits prove that
-    # Lighthouse light has returned while decoded sync/sweep remains stalled.
-    # Total optical silence is ordinary occlusion and must never destroy the
-    # live decoder context merely because the user kept Tracker covered.
+    # Prefer rebuilding a wedged Gen2 tracker only when raw photodiode hits
+    # prove that Lighthouse light has returned while decoded sync/sweep remains
+    # stalled.  Some deployed libsurvive builds never expose raw callbacks even
+    # though decoded tracking is healthy.  For those sessions only, permit one
+    # conservative rebuild after a much longer decoded-silence grace period.
     _DECODER_RESTART_AFTER_S = 2.0
+    _DECODER_UNVERIFIED_RESTART_AFTER_S = 10.0
     _DECODER_RESTART_COOLDOWN_S = 10.0
     _DECODER_RESTART_MAX_ATTEMPTS = 2
     _DECODER_RESTART_TIMEOUT_S = 8.0
@@ -419,7 +421,12 @@ class PikaSenseServicer(LeaderServicer):
         self._tracker_recovery_ready = False
         self._raw_optical_reacquiring = False
         self._raw_optical_reacquiring_since: float | None = None
+        self._raw_optical_telemetry_observed = False
         self._decoder_restart_after_s = self._DECODER_RESTART_AFTER_S
+        self._decoder_unverified_restart_after_s = (
+            self._DECODER_UNVERIFIED_RESTART_AFTER_S
+        )
+        self._unverified_decoder_restart_attempted = False
         self._decoder_restart_attempts = 0
         self._last_decoder_restart_monotonic: float | None = None
         self._decoder_restart_discovery_deadline: float | None = None
@@ -1083,6 +1090,7 @@ class PikaSenseServicer(LeaderServicer):
         self._tracker_recovery_ready = False
         self._raw_optical_reacquiring = False
         self._raw_optical_reacquiring_since = None
+        self._unverified_decoder_restart_attempted = False
         self._decoder_restart_attempts = 0
         self._last_decoder_restart_monotonic = None
         self._decoder_restart_discovery_deadline = None
@@ -1310,28 +1318,40 @@ class PikaSenseServicer(LeaderServicer):
         now: float,
         *,
         raw_light_visible: bool = True,
+        allow_unverified: bool = False,
     ) -> bool:
         """Rebuild a stuck tracker backend while the follower is held.
 
-        Raw-light evidence is mandatory because it proves the photodiodes are
-        seeing Lighthouse sweeps while decoded tracking is wedged.  When both
-        streams are silent the only justified conclusion is occlusion; an
-        in-process context rebuild in that state destroyed recovery in the
-        captured failure trace.
+        Raw-light evidence is preferred because it distinguishes returned
+        Lighthouse sweeps from an ordinary occlusion.  If this hardware
+        session has never produced usable raw telemetry, a separate delayed,
+        one-shot fallback can rebuild a decoded stream that remains silent.
         """
         if self._decoder_restart_active.is_set():
             return True
         if self._decoder_restart_failed:
             return False
-        if not raw_light_visible:
+        if raw_light_visible:
+            if self._raw_optical_reacquiring_since is None:
+                self._raw_optical_reacquiring_since = now
+            stall_since = self._raw_optical_reacquiring_since
+            stall_duration_s = now - stall_since
+            restart_after_s = self._decoder_restart_after_s
+            trigger = "raw light remained visible without decoded sync/sweep"
+        else:
             self._raw_optical_reacquiring_since = None
-            return False
-        if self._raw_optical_reacquiring_since is None:
-            self._raw_optical_reacquiring_since = now
-        stall_since = self._raw_optical_reacquiring_since
-        restart_after_s = self._decoder_restart_after_s
-        trigger = "raw light remained visible without decoded sync/sweep"
-        if now - stall_since < restart_after_s:
+            if not allow_unverified or self._unverified_decoder_restart_attempted:
+                return False
+            last_fresh = self._last_fresh_received_monotonic
+            if last_fresh is None:
+                return False
+            stall_duration_s = now - last_fresh
+            restart_after_s = self._decoder_unverified_restart_after_s
+            trigger = (
+                "decoded tracking remained silent while raw-light telemetry "
+                "was unavailable"
+            )
+        if stall_duration_s < restart_after_s:
             return False
         if self._decoder_restart_attempts >= self._DECODER_RESTART_MAX_ATTEMPTS:
             return False
@@ -1352,6 +1372,10 @@ class PikaSenseServicer(LeaderServicer):
             self._decoder_restart_attempts = self._DECODER_RESTART_MAX_ATTEMPTS
             return False
 
+        if not raw_light_visible:
+            # This fallback is intentionally one-shot for the current loss
+            # episode.  A covered Tracker must not enter a context-restart loop.
+            self._unverified_decoder_restart_attempted = True
         self._decoder_restart_attempts += 1
         self._last_decoder_restart_monotonic = now
         logger.warning(
@@ -1359,7 +1383,7 @@ class PikaSenseServicer(LeaderServicer):
             "context "
             "(attempt %d/%d).",
             trigger,
-            now - stall_since,
+            stall_duration_s,
             self._decoder_restart_attempts,
             self._DECODER_RESTART_MAX_ATTEMPTS,
         )
@@ -1506,6 +1530,7 @@ class PikaSenseServicer(LeaderServicer):
             sample is not None and raw_health_reason is None
         )
         if raw_optical_available:
+            self._raw_optical_telemetry_observed = True
             self._last_seen_tracker_raw_optical_ts = sample.raw_optical_timestamp_s
             self._decoder_restart_discovery_deadline = None
         health_reason = None if sample is None else self._optical_health_reason(sample)
@@ -1556,8 +1581,26 @@ class PikaSenseServicer(LeaderServicer):
                 )
                 self._maybe_restart_tracker_decoder(now)
             elif not raw_optical_available:
+                unverified_restart_started = bool(
+                    self._reference_required
+                    and not self._raw_optical_telemetry_observed
+                    and self._last_valid_tracker_sample is not None
+                    and self._maybe_restart_tracker_decoder(
+                        now,
+                        raw_light_visible=False,
+                        allow_unverified=True,
+                    )
+                )
                 rediscovery_deadline = self._decoder_restart_discovery_deadline
-                if rediscovery_deadline is not None and now < rediscovery_deadline:
+                if unverified_restart_started:
+                    self._raw_optical_reacquiring = True
+                    self._last_tracker_health_reason = (
+                        "tracker decoder recovery restart in progress"
+                    )
+                elif (
+                    rediscovery_deadline is not None
+                    and now < rediscovery_deadline
+                ):
                     self._raw_optical_reacquiring = True
                     self._last_tracker_health_reason = (
                         "tracker decoder restarted; rediscovering Tracker device"

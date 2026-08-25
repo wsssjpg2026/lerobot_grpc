@@ -742,7 +742,7 @@ class TestAutoReference:
     def test_prolonged_total_optical_silence_stays_lost_without_restart(
         self, tmp_path
     ):
-        """An ordinary long occlusion must never destroy the live context."""
+        """Proven raw telemetry distinguishes a real long occlusion."""
         servicer = _make_leader(
             tmp_path,
             auto_reference=True,
@@ -759,6 +759,10 @@ class TestAutoReference:
         servicer._device.raw_optical_age_s = 0.2
         servicer._device.raw_optical_measurement_count = 0
         servicer._last_fresh_received_monotonic -= 0.6
+        # If the session had never produced raw telemetry this would make the
+        # conservative fallback fire immediately.  A previously healthy raw
+        # stream means the current silence is trustworthy occlusion evidence.
+        servicer._decoder_unverified_restart_after_s = 0.0
 
         lost = list(servicer.GetAction(None, None))
 
@@ -768,6 +772,56 @@ class TestAutoReference:
         assert {
             feature.tracking_state for feature in lost
         } == {device_pb2.TrackingState.TRACKING_STATE_LOST}
+
+    def test_missing_raw_telemetry_gets_one_blind_restart_after_long_silence(
+        self, tmp_path
+    ):
+        """A deployed raw monitor that never emits must not disable recovery.
+
+        The hardware trace had healthy decoded tracking with raw_measurements=0
+        for the entire session.  On the second occlusion the decoded stream
+        wedged, but the raw-gated watchdog could therefore never rebuild it.
+        """
+        servicer = _make_leader(
+            tmp_path,
+            auto_reference=True,
+            cumulative_clutch=True,
+        )
+        servicer._tracker_health_enabled = True
+        servicer._device.advance_raw_optical_timestamp = False
+        servicer._device.raw_optical_age_s = 100.0
+        servicer._device.raw_optical_measurement_count = 0
+        servicer.Connect(None, None)
+        servicer._compute_action()
+
+        # Decoded poses were previously healthy, then freeze exactly as in the
+        # captured second occlusion.  Make the long-silence grace deterministic.
+        servicer._device.advance_timestamp = False
+        servicer._device.advance_optical_timestamp = False
+        servicer._device.optical_age_s = 0.2
+        servicer._last_fresh_received_monotonic -= 0.6
+        servicer._decoder_unverified_restart_after_s = 0.0
+
+        recovering = list(servicer.GetAction(None, None))
+
+        assert servicer._device.restart_tracker_calls == 1
+        assert servicer._reference_required is True
+        assert servicer._clutched is False
+        assert {
+            feature.tracking_state for feature in recovering
+        } == {device_pb2.TrackingState.TRACKING_STATE_RECOVERING}
+
+        # The unverified fallback is one-shot for this loss episode.  Continued
+        # occlusion must not cause a context-restart loop.
+        deadline = time.monotonic() + 0.5
+        while (
+            servicer._decoder_restart_result is None
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.005)
+        list(servicer.GetAction(None, None))
+        list(servicer.GetAction(None, None))
+        assert servicer._device.restart_tracker_calls == 1
 
     def test_one_late_decoded_sample_does_not_flicker_lost_to_recovering(
         self, tmp_path
