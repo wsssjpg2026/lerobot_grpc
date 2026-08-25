@@ -65,6 +65,9 @@ class _FakeSense:
     def get_gripper_distance(self):
         return self.gripper
 
+    def lock_tracker_global_scene(self):
+        return True
+
 
 def _make_leader(tmp_path, command_provider):
     servicer = PikaSenseServicer(

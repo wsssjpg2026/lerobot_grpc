@@ -87,6 +87,8 @@ class _FakeSense:
         self.pose_confidence = 100.0
         self.connect_calls = 0
         self.restart_tracker_calls = 0
+        self.lock_tracker_global_scene_calls = 0
+        self.lock_tracker_global_scene_result = True
 
     def connect(self):
         self.connect_calls += 1
@@ -97,6 +99,10 @@ class _FakeSense:
     def restart_vive_tracker(self):
         self.restart_tracker_calls += 1
         return True
+
+    def lock_tracker_global_scene(self):
+        self.lock_tracker_global_scene_calls += 1
+        return self.lock_tracker_global_scene_result
 
     def get_tracker_devices(self):
         return self.devices
@@ -209,6 +215,19 @@ def _delta_pos(action: dict[str, float]) -> np.ndarray:
 
 
 class TestAutoReference:
+    def test_ready_locks_sdk_global_scene_once(self, tmp_path):
+        """READY is not published until the active libsurvive map is frozen."""
+        servicer = _make_leader(tmp_path, auto_reference=False)
+
+        first = servicer._update_tracking_readiness()
+        second = servicer._update_tracking_readiness()
+
+        assert first.state == (
+            device_pb2.TrackingReadinessState.TRACKING_READINESS_STATE_READY
+        )
+        assert second.state == first.state
+        assert servicer._device.lock_tracker_global_scene_calls == 1
+
     def test_connect_latches_and_engages(self, tmp_path):
         """Connect auto-latches T_begin at the current pose and engages, so a
         later hand movement publishes a live delta without SetReference."""

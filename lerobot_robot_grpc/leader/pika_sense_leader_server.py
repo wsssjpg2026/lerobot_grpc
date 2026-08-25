@@ -394,6 +394,8 @@ class PikaSenseServicer(LeaderServicer):
             reason="Pika hardware has not started",
         )
         self._last_readiness_state_logged: int | None = None
+        self._global_scene_locked = False
+        self._global_scene_lock_context_epoch = 0
         self._readiness_sample_period_s = self._READINESS_SAMPLE_PERIOD_S
         self._readiness_stop_event: threading.Event | None = None
         self._readiness_thread: threading.Thread | None = None
@@ -721,6 +723,51 @@ class PikaSenseServicer(LeaderServicer):
             sample,
             now_s=now,
         )
+        if (
+            self._global_scene_locked
+            and snapshot.context_epoch != self._global_scene_lock_context_epoch
+        ):
+            self._global_scene_locked = False
+            self._global_scene_lock_context_epoch = 0
+        if (
+            snapshot.state
+            == device_pb2.TrackingReadinessState.TRACKING_READINESS_STATE_READY
+            and not self._global_scene_locked
+        ):
+            lock_global_scene = getattr(
+                self._device,
+                "lock_tracker_global_scene",
+                None,
+            )
+            try:
+                locked = bool(
+                    callable(lock_global_scene) and lock_global_scene()
+                )
+            except Exception:
+                logger.exception("Failed to lock the Tracker global scene")
+                locked = False
+            if locked:
+                self._global_scene_locked = True
+                self._global_scene_lock_context_epoch = snapshot.context_epoch
+                logger.info(
+                    "TRACKER MAP: locked Lighthouse global scene for context %d; "
+                    "background GSS refinements cannot change this control "
+                    "session frame.",
+                    snapshot.context_epoch,
+                )
+            else:
+                snapshot = replace(
+                    snapshot,
+                    state=(
+                        device_pb2.TrackingReadinessState.
+                        TRACKING_READINESS_STATE_ERROR
+                    ),
+                    reason=(
+                        "failed to lock the Lighthouse global map for the "
+                        "control session"
+                    ),
+                    token="",
+                )
         decoded_healthy = (
             sample is not None
             and sample.optical_age_s <= self._READINESS_OPTICAL_STALE_S
@@ -1358,6 +1405,8 @@ class PikaSenseServicer(LeaderServicer):
         self._pending_tracker_samples.clear()
         self._tracker_recovery_samples.clear()
         self._tracker_recovery_ready = False
+        self._global_scene_locked = False
+        self._global_scene_lock_context_epoch = 0
         self._raw_optical_reacquiring = True
         self._raw_optical_reacquiring_since = None
         self._all_optical_silent_since = None
