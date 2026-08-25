@@ -712,8 +712,10 @@ class TestAutoReference:
         )
         assert "automatic" in snapshot.reason
 
-    def test_startup_readiness_restarts_silent_optical_monitor(self, tmp_path):
-        """The captured cold-start failure had both health streams go silent."""
+    def test_startup_readiness_does_not_restart_while_optically_occluded(
+        self, tmp_path
+    ):
+        """No photons means occlusion, not evidence that the decoder wedged."""
         servicer = _make_leader(
             tmp_path,
             auto_reference=False,
@@ -728,34 +730,19 @@ class TestAutoReference:
         servicer._device.advance_raw_optical_timestamp = False
         servicer._device.raw_optical_age_s = 0.4
         servicer._device.raw_optical_measurement_count = 0
-        servicer._decoder_restart_without_raw_after_s = 0.0
 
         snapshot = servicer._update_tracking_readiness()
-        deadline = time.monotonic() + 0.5
-        while (
-            servicer._device.restart_tracker_calls == 0
-            and time.monotonic() < deadline
-        ):
-            time.sleep(0.005)
 
-        assert servicer._device.restart_tracker_calls == 1
-        assert snapshot.state == (
+        assert servicer._device.restart_tracker_calls == 0
+        assert snapshot.state != (
             device_pb2.TrackingReadinessState.TRACKING_READINESS_STATE_STARTING
         )
-        assert (
-            "raw and decoded optical streams remained silent" in snapshot.reason
-        )
+        assert "automatic tracker decoder restart" not in snapshot.reason
 
-    def test_prolonged_total_optical_silence_restarts_tracker_backend(
+    def test_prolonged_total_optical_silence_stays_lost_without_restart(
         self, tmp_path
     ):
-        """A wedged raw monitor must not leave recovery stuck forever.
-
-        The real failure trace had neither decoded events nor raw-light
-        events after the Tracker returned to view.  While the follower is
-        already held, one bounded context rebuild is safer than waiting
-        indefinitely for a raw event that the wedged monitor cannot report.
-        """
+        """An ordinary long occlusion must never destroy the live context."""
         servicer = _make_leader(
             tmp_path,
             auto_reference=True,
@@ -772,16 +759,15 @@ class TestAutoReference:
         servicer._device.raw_optical_age_s = 0.2
         servicer._device.raw_optical_measurement_count = 0
         servicer._last_fresh_received_monotonic -= 0.6
-        servicer._decoder_restart_without_raw_after_s = 0.0
 
-        recovering = list(servicer.GetAction(None, None))
+        lost = list(servicer.GetAction(None, None))
 
-        assert servicer._device.restart_tracker_calls == 1
+        assert servicer._device.restart_tracker_calls == 0
         assert servicer._reference_required is True
         assert servicer._clutched is False
         assert {
-            feature.tracking_state for feature in recovering
-        } == {device_pb2.TrackingState.TRACKING_STATE_RECOVERING}
+            feature.tracking_state for feature in lost
+        } == {device_pb2.TrackingState.TRACKING_STATE_LOST}
 
     def test_slow_tracker_restart_does_not_block_get_action(self, tmp_path):
         """Context teardown must run outside the latency-critical action RPC."""
@@ -796,12 +782,11 @@ class TestAutoReference:
 
         servicer._device.advance_timestamp = False
         servicer._device.advance_optical_timestamp = False
-        servicer._device.advance_raw_optical_timestamp = False
+        servicer._device.advance_raw_optical_timestamp = True
         servicer._device.optical_age_s = 0.2
-        servicer._device.raw_optical_age_s = 0.2
-        servicer._device.raw_optical_measurement_count = 0
+        servicer._device.raw_optical_age_s = 0.0
         servicer._last_fresh_received_monotonic -= 0.6
-        servicer._decoder_restart_without_raw_after_s = 0.0
+        servicer._decoder_restart_after_s = 0.0
 
         restart_started = threading.Event()
         release_restart = threading.Event()
@@ -856,6 +841,79 @@ class TestAutoReference:
         assert {
             feature.tracking_state for feature in repeated_action_features
         } == {device_pb2.TrackingState.TRACKING_STATE_RECOVERING}
+
+    def test_stuck_tracker_restart_exits_recovering_after_timeout(self, tmp_path):
+        """A blocked native close must not advertise RECOVERING forever."""
+        servicer = _make_leader(
+            tmp_path,
+            auto_reference=True,
+            cumulative_clutch=True,
+        )
+        servicer._tracker_health_enabled = True
+        servicer.Connect(None, None)
+        servicer._compute_action()
+
+        servicer._device.advance_optical_timestamp = False
+        servicer._device.optical_age_s = 0.2
+        servicer._device.advance_raw_optical_timestamp = True
+        servicer._device.raw_optical_age_s = 0.0
+        servicer._last_fresh_received_monotonic -= 0.6
+        servicer._decoder_restart_after_s = 0.0
+        servicer._decoder_restart_timeout_s = 0.0
+
+        restart_started = threading.Event()
+        release_restart = threading.Event()
+
+        def stuck_restart():
+            restart_started.set()
+            release_restart.wait(timeout=2.0)
+            return True
+
+        servicer._device.restart_vive_tracker = stuck_restart
+        try:
+            list(servicer.GetAction(None, None))
+            assert restart_started.wait(timeout=0.5)
+            timed_out = list(servicer.GetAction(None, None))
+        finally:
+            release_restart.set()
+
+        assert {
+            feature.tracking_state for feature in timed_out
+        } == {device_pb2.TrackingState.TRACKING_STATE_LOST}
+        assert "restart timed out" in servicer._last_tracker_health_reason
+
+    def test_failed_tracker_restart_returns_to_lost(self, tmp_path):
+        """A completed-but-failed restart must not remain RECOVERING."""
+        servicer = _make_leader(
+            tmp_path,
+            auto_reference=True,
+            cumulative_clutch=True,
+        )
+        servicer._tracker_health_enabled = True
+        servicer.Connect(None, None)
+        servicer._compute_action()
+
+        servicer._device.advance_optical_timestamp = False
+        servicer._device.optical_age_s = 0.2
+        servicer._device.advance_raw_optical_timestamp = True
+        servicer._device.raw_optical_age_s = 0.0
+        servicer._last_fresh_received_monotonic -= 0.6
+        servicer._decoder_restart_after_s = 0.0
+        servicer._device.restart_vive_tracker = lambda: False
+
+        list(servicer.GetAction(None, None))
+        deadline = time.monotonic() + 0.5
+        while (
+            servicer._decoder_restart_result is None
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.005)
+        failed = list(servicer.GetAction(None, None))
+
+        assert {
+            feature.tracking_state for feature in failed
+        } == {device_pb2.TrackingState.TRACKING_STATE_LOST}
+        assert servicer._decoder_restart_failed is True
 
     def test_collection_recovery_stays_confirmable_while_operator_repositions(
         self, tmp_path
