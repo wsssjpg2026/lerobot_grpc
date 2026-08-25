@@ -35,9 +35,12 @@ Follower safety stack (shared by sim and real adapters):
 6. Collision gating checks the raw IK endpoint and the actual capped path.
    A robot adapter may inject semantic full-body geometry and gripper coupling;
    otherwise model-capability auto-detection supplies the legacy self-check.
-7. A >30° branch jump triggers same-frame fallback; if no continuous branch
-   remains, the command is rejected and the last safe target is held.  A
-   velocity cap cannot turn a discontinuous IK branch into a safe command.
+7. A candidate more than 30° from both the previous full IK branch and the
+   committed, frame-capped command triggers same-frame fallback.  If no
+   continuous branch or safe return remains, the command is rejected and the
+   last safe target is held.  A velocity cap cannot turn a discontinuous IK
+   branch into a safe command, but an unreached endpoint must not block a
+   branch-continuous escape toward the command the robot actually received.
 
 Kept from the previous stack (official-equivalent or bench UX):
 
@@ -655,6 +658,27 @@ class PoseDeltaLaw:
             seeds.append(seed)
         return seeds
 
+    def _branch_distance(
+        self,
+        raw_solution: np.ndarray,
+        committed_solution: np.ndarray,
+    ) -> float:
+        """Distance from the nearest valid cross-frame continuity anchor.
+
+        ``_last_solved`` identifies the previous full-target IK branch while
+        ``committed_solution`` is the frame-capped command actually exposed to
+        the backend.  During a large retarget those states intentionally
+        diverge.  A new solution is discontinuous only when it jumps away from
+        both: otherwise returning toward the committed state would be trapped
+        behind an endpoint the robot never reached.
+        """
+        if self._last_solved is None:
+            return 0.0
+        return min(
+            float(np.abs(raw_solution - self._last_solved).max()),
+            float(np.abs(raw_solution - committed_solution).max()),
+        )
+
     @staticmethod
     def _interpolate_rotation(
         start_rot: np.ndarray, target_rot: np.ndarray, fraction: float
@@ -707,7 +731,7 @@ class PoseDeltaLaw:
         target_rot: np.ndarray,
         solve_started: float,
     ):
-        """Find the furthest safe Cartesian prefix within one frame cap."""
+        """Find the furthest branch-continuous safe Cartesian prefix."""
         start_state = np.asarray(gripper_candidate, dtype=float).copy()
         start_state[list(self._body_dofs)] = step_start
         start_pose = self._fk(start_state)
@@ -726,7 +750,7 @@ class PoseDeltaLaw:
                 prefix_pos,
                 prefix_rot,
                 seed,
-                allow_collision_avoidance=False,
+                allow_collision_avoidance=True,
             )
             raw = np.asarray(result.qpos, dtype=float)
             valid = bool(
@@ -736,9 +760,9 @@ class PoseDeltaLaw:
                 and float(np.abs(raw - step_start).max())
                 <= self._max_dq_frame_rad + 1e-12
             )
-            if valid and self._last_solved is not None:
+            if valid:
                 valid = bool(
-                    float(np.abs(raw - self._last_solved).max())
+                    self._branch_distance(raw, step_start)
                     <= self._jump_reset_rad
                 )
             probe = gripper_candidate.copy()
@@ -1002,11 +1026,7 @@ class PoseDeltaLaw:
                 remember_failure(last_failure, result)
                 continue
 
-            branch_distance = (
-                0.0
-                if self._last_solved is None
-                else float(np.abs(raw_solution - self._last_solved).max())
-            )
+            branch_distance = self._branch_distance(raw_solution, step_start)
             jumped_candidate = branch_distance > self._jump_reset_rad
             if jumped_candidate and self._reject_branch_jumps:
                 last_failure = "ik-branch-jump"
@@ -1072,6 +1092,7 @@ class PoseDeltaLaw:
                     jumped_candidate,
                     collision_clipped,
                     target_collided,
+                    False,
                 )
             )
             # Normal operation remains a sub-millisecond one-solve fast path.
@@ -1083,7 +1104,19 @@ class PoseDeltaLaw:
             ):
                 break
 
-        if not candidates and collision_endpoint_seen and not checker_failed:
+        prefix_failure_reasons = {
+            reason for _, reason, _, _, _ in failures
+        }
+        prefix_recoverable = bool(
+            prefix_failure_reasons
+            & {
+                "collision",
+                "collision-path",
+                "ik-branch-jump",
+                "ik-residual",
+            }
+        )
+        if not candidates and prefix_recoverable and not checker_failed:
             try:
                 prefix = self._cartesian_prefix_candidate(
                     qpos_rad=qpos_rad,
@@ -1094,7 +1127,7 @@ class PoseDeltaLaw:
                     solve_started=solve_started,
                 )
             except Exception:
-                logger.exception("Cartesian collision-prefix solve failed closed")
+                logger.exception("Cartesian safe-prefix solve failed closed")
                 prefix = None
                 checker_failed = True
                 last_failure = "checker-error"
@@ -1120,7 +1153,8 @@ class PoseDeltaLaw:
                         prefix_solution,
                         prefix_solution,
                         False,
-                        True,
+                        collision_endpoint_seen,
+                        collision_endpoint_seen,
                         True,
                     )
                 )
@@ -1156,10 +1190,11 @@ class PoseDeltaLaw:
             jumped,
             collision_clipped,
             target_collided,
+            cartesian_clipped,
         ) = min(
             candidates, key=lambda candidate: candidate[0]
         )
-        frame_capped = not np.allclose(
+        frame_capped = cartesian_clipped or not np.allclose(
             raw_solution, sol_rad, rtol=0.0, atol=1e-12
         )
         if jumped:
@@ -1177,7 +1212,9 @@ class PoseDeltaLaw:
         # Commit all cross-frame solve state atomically after the winner and
         # its actual next-step path have passed every gate.
         self._last_solved = (
-            sol_rad.copy() if target_collided else raw_solution.copy()
+            sol_rad.copy()
+            if target_collided or cartesian_clipped
+            else raw_solution.copy()
         )
         self._warm_seed = sol_rad.copy()
 

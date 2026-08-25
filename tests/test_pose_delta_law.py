@@ -256,6 +256,107 @@ class TestJumpReset:
         np.testing.assert_allclose(law._last_sent, committed)
         assert law._warm_seed is None
 
+    def test_safe_return_is_not_compared_only_with_unreached_raw_solution(
+        self, monkeypatch
+    ):
+        """A frame-capped command must retain an escape path.
+
+        The full IK endpoint may be far ahead of the command actually sent to
+        the robot.  If the operator reverses, a solution continuous with the
+        committed command is safe even when it is more than 30 degrees from
+        that unreached endpoint.  Comparing only with ``_last_solved`` traps
+        the arm in IK_HOLD instead of accepting the return motion.
+        """
+        law = _law(
+            reject_branch_jumps=True,
+            max_dq_frame_deg=5.0,
+        )
+        qpos = _home_qpos()
+        law.lock_reference(qpos)
+        phase = "outbound"
+
+        def controlled_solve(target_pos, target_rot, _seed):
+            if phase == "outbound":
+                raw = qpos[:5].copy()
+                raw[0] += math.radians(40.0)
+            else:
+                raw = law._last_sent.copy()
+            return type("ControlledSolution", (), {
+                "qpos": raw,
+                "pos_err": 0.0,
+                "rot_err": 0.0,
+                "manipulability": 1.0,
+                "achieved_pos": np.asarray(target_pos),
+                "achieved_rot": np.asarray(target_rot),
+            })()
+
+        monkeypatch.setattr(law._ik_solver, "solve", controlled_solve)
+        outbound = law.solve(_delta(dx=0.20), qpos)
+        assert not outbound.held
+        committed = law._last_sent.copy()
+        assert float(np.abs(law._last_solved - committed).max()) > math.radians(30.0)
+
+        # Model one frame of perfect actuator feedback, then reverse toward
+        # the pose that is already committed and therefore branch-continuous.
+        qpos[:5] = committed
+        phase = "return"
+        returned = law.solve(_delta(), qpos)
+
+        assert not returned.held
+        assert returned.reason != "ik-branch-jump"
+        np.testing.assert_allclose(law._last_sent, committed)
+
+    def test_branch_jump_advances_through_a_continuous_cartesian_prefix(
+        self, monkeypatch
+    ):
+        """A distant branch change must not turn into a permanent hold.
+
+        When the full Cartesian target converges only onto a discontinuous IK
+        branch, a nearby prefix can still be solved on the current branch.
+        The controller should advance by that safe prefix and retry the full
+        operator target on later frames.
+        """
+        law = _law(
+            reject_branch_jumps=True,
+            max_dq_frame_deg=5.0,
+        )
+        qpos = _home_qpos()
+        law.lock_reference(qpos)
+        reference_pos = law.arm_reference[:3, 3].copy()
+        committed = qpos[:5].copy()
+
+        def branch_or_prefix_solve(target_pos, target_rot, _seed):
+            target_distance = float(np.linalg.norm(target_pos - reference_pos))
+            raw = committed.copy()
+            if target_distance > 0.03:
+                raw[0] += math.radians(45.0)
+            else:
+                raw[0] += math.radians(2.0)
+            return type("PrefixSolution", (), {
+                "qpos": raw,
+                "pos_err": 0.0,
+                "rot_err": 0.0,
+                "manipulability": 1.0,
+                "achieved_pos": np.asarray(target_pos),
+                "achieved_rot": np.asarray(target_rot),
+            })()
+
+        # Establish the current branch before presenting the distant target.
+        law._last_solved = committed.copy()
+        law._last_sent = committed.copy()
+        monkeypatch.setattr(law._ik_solver, "solve", branch_or_prefix_solve)
+
+        advanced = law.solve(_delta(dx=0.20), qpos)
+
+        assert not advanced.held
+        assert advanced.reason != "ik-branch-jump"
+        assert advanced.frame_capped
+        assert math.isclose(
+            law._last_sent[0] - committed[0],
+            math.radians(2.0),
+            abs_tol=1e-12,
+        )
+
 
 class TestFrameCap:
     def test_published_step_capped_per_joint(self):
