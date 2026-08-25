@@ -40,6 +40,9 @@ class ReadinessSnapshot:
     global_scene_count: int = 0
     required_global_scene_count: int = 0
     using_cached_global_scene: bool = False
+    decoded_optical_age_s: float = 0.0
+    raw_optical_age_s: float = 0.0
+    recent_raw_optical_measurement_count: int = 0
 
     def to_proto(self) -> device_pb2.TrackingReadiness:
         return device_pb2.TrackingReadiness(
@@ -63,6 +66,11 @@ class ReadinessSnapshot:
             global_scene_count=self.global_scene_count,
             required_global_scene_count=self.required_global_scene_count,
             using_cached_global_scene=self.using_cached_global_scene,
+            decoded_optical_age_s=self.decoded_optical_age_s,
+            raw_optical_age_s=self.raw_optical_age_s,
+            recent_raw_optical_measurement_count=(
+                self.recent_raw_optical_measurement_count
+            ),
         )
 
 
@@ -86,7 +94,7 @@ class TrackerReadinessGate:
         stable_samples: int = 20,
         position_spread_m: float = 0.005,
         rotation_spread_rad: float = np.radians(2.0),
-        optical_stale_s: float = 0.1,
+        optical_stale_s: float = 0.3,
         map_position_delta_m: float = 0.005,
         map_rotation_delta_rad: float = np.radians(1.0),
         fresh_global_scene_count: int = 4,
@@ -319,6 +327,39 @@ class TrackerReadinessGate:
         recent_optical_measurement_count = max(
             0, int(health.get("optical_measurement_count", 0) or 0)
         )
+        decoded_optical_age_s = max(
+            0.0,
+            float(
+                getattr(
+                    sample,
+                    "optical_age_s",
+                    health.get("optical_age_s", 0.0),
+                )
+                or 0.0
+            ),
+        )
+        raw_optical_age_s = max(
+            0.0,
+            float(
+                getattr(
+                    sample,
+                    "raw_optical_age_s",
+                    health.get("raw_optical_age_s", 0.0),
+                )
+                or 0.0
+            ),
+        )
+        recent_raw_optical_measurement_count = max(
+            0,
+            int(
+                getattr(
+                    sample,
+                    "raw_optical_measurement_count",
+                    health.get("raw_optical_measurement_count", 0),
+                )
+                or 0
+            ),
+        )
         global_scene_count = max(
             0, int(health.get("global_scene_count", 0) or 0)
         )
@@ -347,6 +388,11 @@ class TrackerReadinessGate:
             "global_scene_count": global_scene_count,
             "required_global_scene_count": required_global_scene_count,
             "using_cached_global_scene": using_cached_global_scene,
+            "decoded_optical_age_s": decoded_optical_age_s,
+            "raw_optical_age_s": raw_optical_age_s,
+            "recent_raw_optical_measurement_count": (
+                recent_raw_optical_measurement_count
+            ),
         }
         if not bool(health.get("bridge_available", False)):
             self._invalidate(
@@ -455,12 +501,28 @@ class TrackerReadinessGate:
             )
 
         health_reason = None
+        raw_light_is_fresh = (
+            recent_raw_optical_measurement_count > 0
+            and raw_optical_age_s <= self._optical_stale_s
+        )
         if sample is None:
-            health_reason = "no Tracker pose"
-        elif float(getattr(sample, "optical_age_s", float("inf"))) > self._optical_stale_s:
-            health_reason = "Tracker optical measurements are stale"
+            health_reason = (
+                "raw Lighthouse light is visible but no fresh decoded Tracker pose"
+                if raw_light_is_fresh
+                else "no recent raw Lighthouse light or Tracker pose"
+            )
+        elif decoded_optical_age_s > self._optical_stale_s:
+            health_reason = (
+                "raw Lighthouse light is visible but decoded sync/sweep is stale"
+                if raw_light_is_fresh
+                else "no recent raw Lighthouse light; decoded optical measurements are stale"
+            )
         elif int(getattr(sample, "optical_measurement_count", 0)) <= 0:
-            health_reason = "no recent decoded optical measurements"
+            health_reason = (
+                "raw Lighthouse light is visible but no recent decoded optical measurements"
+                if raw_light_is_fresh
+                else "no recent raw or decoded optical measurements"
+            )
         if health_reason is not None:
             if self._ready_identity is not None:
                 self._invalidate(state.TRACKING_READINESS_STATE_LOST, health_reason)

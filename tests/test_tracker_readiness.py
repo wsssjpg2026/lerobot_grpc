@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from lerobot_robot_grpc.leader.tracker_readiness import TrackerReadinessGate
 from lerobot_robot_grpc.protos import device_pb2
@@ -20,6 +21,8 @@ def _health(
     recent_optical_measurement_count: int = 12,
     global_scene_count: int = 4,
     cached_map_lighthouses=(),
+    raw_optical_age_s: float = 0.0,
+    recent_raw_optical_measurement_count: int = 12,
 ):
     positions = positions or {
         "LH0": (0.0, 0.0, 0.0),
@@ -35,6 +38,9 @@ def _health(
         "discovered_lighthouses": cohort,
         "optical_lighthouse_count": visible_lighthouse_count,
         "optical_measurement_count": recent_optical_measurement_count,
+        "optical_age_s": 0.0,
+        "raw_optical_age_s": raw_optical_age_s,
+        "raw_optical_measurement_count": recent_raw_optical_measurement_count,
         "lighthouses": {
             name: {
                 "position": positions[name],
@@ -45,11 +51,17 @@ def _health(
     }
 
 
-def _sample(sequence: int, position=(0.2, 0.3, 0.4)):
+def _sample(
+    sequence: int,
+    position=(0.2, 0.3, 0.4),
+    *,
+    optical_age_s: float = 0.0,
+    optical_measurement_count: int = 12,
+):
     return SimpleNamespace(
         optical_event_sequence=sequence,
-        optical_age_s=0.0,
-        optical_measurement_count=12,
+        optical_age_s=optical_age_s,
+        optical_measurement_count=optical_measurement_count,
         position=np.asarray(position, dtype=float),
         rotation=np.eye(3),
     )
@@ -168,6 +180,60 @@ def test_readiness_exposes_live_optical_visibility_for_operator_guidance() -> No
     assert proto.global_scene_count == 4
     assert proto.required_global_scene_count == 4
     assert proto.using_cached_global_scene is False
+
+
+def test_readiness_accepts_recent_sample_across_100ms_scheduler_jitter() -> None:
+    gate = TrackerReadinessGate(
+        cohort_stable_s=0.0,
+        map_stable_s=0.0,
+        stable_window_s=1.0,
+        stable_samples=20,
+    )
+    cached = _health(
+        cached_map_lighthouses=("LH0", "LH1"),
+        recent_optical_measurement_count=3,
+    )
+
+    result = gate.update(
+        cached,
+        _sample(1, optical_age_s=0.106, optical_measurement_count=3),
+        now_s=0.0,
+    )
+
+    assert result.state == (
+        device_pb2.TrackingReadinessState.
+        TRACKING_READINESS_STATE_VERIFYING_STABILITY
+    )
+    assert result.stable_sample_count == 1
+    assert "stale" not in result.reason
+
+
+def test_readiness_distinguishes_raw_light_from_stalled_decoder() -> None:
+    gate = TrackerReadinessGate(
+        cohort_stable_s=0.0,
+        map_stable_s=0.0,
+        stable_window_s=0.0,
+        stable_samples=1,
+    )
+    cached = _health(
+        cached_map_lighthouses=("LH0", "LH1"),
+        visible_lighthouse_count=0,
+        recent_optical_measurement_count=0,
+        raw_optical_age_s=0.01,
+        recent_raw_optical_measurement_count=8,
+    )
+
+    result = gate.update(
+        cached,
+        _sample(1, optical_age_s=0.4, optical_measurement_count=0),
+        now_s=0.0,
+    )
+    proto = result.to_proto()
+
+    assert "raw Lighthouse light is visible" in result.reason
+    assert proto.recent_raw_optical_measurement_count == 8
+    assert proto.raw_optical_age_s == pytest.approx(0.01)
+    assert proto.decoded_optical_age_s == pytest.approx(0.4)
 
 
 def test_ready_requires_stable_cohort_and_distinct_optical_samples() -> None:

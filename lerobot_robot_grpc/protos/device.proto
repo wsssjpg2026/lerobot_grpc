@@ -260,6 +260,15 @@ message TrackingReadiness {
     uint32 required_global_scene_count = 17;
     // True when all active Lighthouses were seeded from a valid cached map.
     bool using_cached_global_scene = 18;
+    // Exact age of the most recent decoded sync/sweep event. Counts are
+    // aggregated over the SDK health window, while age remains suitable for
+    // distinguishing scheduling jitter from a genuinely stale decoder.
+    float decoded_optical_age_s = 19;
+    // Exact age of the most recent raw photodiode/lightcap event.
+    float raw_optical_age_s = 20;
+    // Raw lightcap events in the SDK health window. Raw activity without
+    // decoded activity identifies a wedged Gen2 sync/sweep decoder.
+    uint32 recent_raw_optical_measurement_count = 21;
 }
 
 message SetReferenceRequest {

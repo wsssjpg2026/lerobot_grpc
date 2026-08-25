@@ -39,7 +39,7 @@ import queue
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -270,6 +270,10 @@ class PikaSenseServicer(LeaderServicer):
     # poll at only 5 Hz, while the 20-sample/1-second stability policy needs a
     # higher internal sampling rate to be satisfiable.
     _READINESS_SAMPLE_PERIOD_S = 0.05
+    # Startup may tolerate short scheduler gaps because READY still requires
+    # distinct optical event sequences. Runtime robot control continues to
+    # use the stricter ``tracker_stale_s`` (100 ms) below.
+    _READINESS_OPTICAL_STALE_S = 0.3
 
     def __init__(
         self,
@@ -378,7 +382,7 @@ class PikaSenseServicer(LeaderServicer):
             stable_samples=20,
             position_spread_m=0.005,
             rotation_spread_rad=np.radians(2.0),
-            optical_stale_s=self._tracker_stale_s,
+            optical_stale_s=self._READINESS_OPTICAL_STALE_S,
             map_position_delta_m=0.005,
             map_rotation_delta_rad=np.radians(1.0),
         )
@@ -694,24 +698,81 @@ class PikaSenseServicer(LeaderServicer):
             # recent readiness snapshot until the replacement context exists;
             # querying SDK health here would wait on the same tracker lock as
             # the background restart and block GetAction/readiness sampling.
+            self._last_readiness = replace(
+                self._last_readiness,
+                state=(
+                    device_pb2.TrackingReadinessState.
+                    TRACKING_READINESS_STATE_STARTING
+                ),
+                reason=(
+                    "optical decoding stalled; automatic tracker decoder "
+                    "restart is in progress"
+                ),
+            )
             return self._last_readiness
         self._last_tracker_health_snapshot = None
         sample = self._read_tracker_sample()
         health = self._last_tracker_health_snapshot
         if health is None:
             health = self._tracker_health_facts()
+        now = time.monotonic()
         snapshot = self._readiness_gate.update(
             health,
             sample,
-            now_s=time.monotonic(),
+            now_s=now,
         )
+        decoded_healthy = (
+            sample is not None
+            and sample.optical_age_s <= self._READINESS_OPTICAL_STALE_S
+            and sample.optical_measurement_count > 0
+        )
+        raw_age_s = float(health.get("raw_optical_age_s", float("inf")))
+        raw_count = int(health.get("raw_optical_measurement_count", 0) or 0)
+        raw_light_visible = (
+            raw_count > 0 and raw_age_s <= self._READINESS_OPTICAL_STALE_S
+        )
+        if decoded_healthy:
+            self._raw_optical_reacquiring_since = None
+            self._all_optical_silent_since = None
+            if snapshot.state == (
+                device_pb2.TrackingReadinessState.TRACKING_READINESS_STATE_READY
+            ):
+                self._decoder_restart_attempts = 0
+                self._last_decoder_restart_monotonic = None
+        elif bool(health.get("bridge_available", False)):
+            if raw_light_visible:
+                self._all_optical_silent_since = None
+            else:
+                self._raw_optical_reacquiring_since = None
+            restart_started = self._maybe_restart_tracker_decoder(
+                now,
+                raw_light_visible=raw_light_visible,
+            )
+            if restart_started:
+                snapshot = replace(
+                    snapshot,
+                    state=(
+                        device_pb2.TrackingReadinessState.
+                        TRACKING_READINESS_STATE_STARTING
+                    ),
+                    reason=(
+                        "raw Lighthouse light was detected but the Gen2 "
+                        "sync/sweep decoder stalled; automatic tracker "
+                        "decoder restart is in progress"
+                        if raw_light_visible
+                        else "raw and decoded optical streams remained "
+                        "silent; automatic tracker decoder restart is in "
+                        "progress"
+                    ),
+                )
         self._last_readiness = snapshot
         if snapshot.state != self._last_readiness_state_logged:
             self._last_readiness_state_logged = snapshot.state
             logger.info(
                 "TRACKER READINESS: %s — %s (context=%d generation=%d "
                 "gss_scenes=%d/%d cached=%s expected=%s solved=%s visible=%d "
-                "optical_measurements=%d)",
+                "decoded_age_ms=%.0f optical_measurements=%d raw_age_ms=%.0f "
+                "raw_measurements=%d)",
                 device_pb2.TrackingReadinessState.Name(snapshot.state).removeprefix(
                     "TRACKING_READINESS_STATE_"
                 ),
@@ -724,7 +785,10 @@ class PikaSenseServicer(LeaderServicer):
                 list(snapshot.expected_lighthouses),
                 list(snapshot.solved_lighthouses),
                 snapshot.visible_lighthouse_count,
+                snapshot.decoded_optical_age_s * 1000.0,
                 snapshot.recent_optical_measurement_count,
+                snapshot.raw_optical_age_s * 1000.0,
+                snapshot.recent_raw_optical_measurement_count,
             )
         return snapshot
 

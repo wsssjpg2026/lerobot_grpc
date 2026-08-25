@@ -284,7 +284,7 @@ class ResumeResponse(_message.Message):
     def __init__(self, resumed: _Optional[bool] = ..., hold_epoch: _Optional[int] = ...) -> None: ...
 
 class TrackingReadiness(_message.Message):
-    __slots__ = ("state", "reason", "context_epoch", "global_scene_generation", "lighthouse_cohort_generation", "readiness_generation", "expected_lighthouses", "solved_lighthouses", "token", "stable_sample_count", "stable_window_s", "position_spread_m", "rotation_spread_rad", "visible_lighthouse_count", "recent_optical_measurement_count")
+    __slots__ = ("state", "reason", "context_epoch", "global_scene_generation", "lighthouse_cohort_generation", "readiness_generation", "expected_lighthouses", "solved_lighthouses", "token", "stable_sample_count", "stable_window_s", "position_spread_m", "rotation_spread_rad", "visible_lighthouse_count", "recent_optical_measurement_count", "global_scene_count", "required_global_scene_count", "using_cached_global_scene", "decoded_optical_age_s", "raw_optical_age_s", "recent_raw_optical_measurement_count")
     STATE_FIELD_NUMBER: _ClassVar[int]
     REASON_FIELD_NUMBER: _ClassVar[int]
     CONTEXT_EPOCH_FIELD_NUMBER: _ClassVar[int]
@@ -300,6 +300,12 @@ class TrackingReadiness(_message.Message):
     ROTATION_SPREAD_RAD_FIELD_NUMBER: _ClassVar[int]
     VISIBLE_LIGHTHOUSE_COUNT_FIELD_NUMBER: _ClassVar[int]
     RECENT_OPTICAL_MEASUREMENT_COUNT_FIELD_NUMBER: _ClassVar[int]
+    GLOBAL_SCENE_COUNT_FIELD_NUMBER: _ClassVar[int]
+    REQUIRED_GLOBAL_SCENE_COUNT_FIELD_NUMBER: _ClassVar[int]
+    USING_CACHED_GLOBAL_SCENE_FIELD_NUMBER: _ClassVar[int]
+    DECODED_OPTICAL_AGE_S_FIELD_NUMBER: _ClassVar[int]
+    RAW_OPTICAL_AGE_S_FIELD_NUMBER: _ClassVar[int]
+    RECENT_RAW_OPTICAL_MEASUREMENT_COUNT_FIELD_NUMBER: _ClassVar[int]
     state: TrackingReadinessState
     reason: str
     context_epoch: int
@@ -315,7 +321,13 @@ class TrackingReadiness(_message.Message):
     rotation_spread_rad: float
     visible_lighthouse_count: int
     recent_optical_measurement_count: int
-    def __init__(self, state: _Optional[_Union[TrackingReadinessState, str]] = ..., reason: _Optional[str] = ..., context_epoch: _Optional[int] = ..., global_scene_generation: _Optional[int] = ..., lighthouse_cohort_generation: _Optional[int] = ..., readiness_generation: _Optional[int] = ..., expected_lighthouses: _Optional[_Iterable[str]] = ..., solved_lighthouses: _Optional[_Iterable[str]] = ..., token: _Optional[str] = ..., stable_sample_count: _Optional[int] = ..., stable_window_s: _Optional[float] = ..., position_spread_m: _Optional[float] = ..., rotation_spread_rad: _Optional[float] = ..., visible_lighthouse_count: _Optional[int] = ..., recent_optical_measurement_count: _Optional[int] = ...) -> None: ...
+    global_scene_count: int
+    required_global_scene_count: int
+    using_cached_global_scene: bool
+    decoded_optical_age_s: float
+    raw_optical_age_s: float
+    recent_raw_optical_measurement_count: int
+    def __init__(self, state: _Optional[_Union[TrackingReadinessState, str]] = ..., reason: _Optional[str] = ..., context_epoch: _Optional[int] = ..., global_scene_generation: _Optional[int] = ..., lighthouse_cohort_generation: _Optional[int] = ..., readiness_generation: _Optional[int] = ..., expected_lighthouses: _Optional[_Iterable[str]] = ..., solved_lighthouses: _Optional[_Iterable[str]] = ..., token: _Optional[str] = ..., stable_sample_count: _Optional[int] = ..., stable_window_s: _Optional[float] = ..., position_spread_m: _Optional[float] = ..., rotation_spread_rad: _Optional[float] = ..., visible_lighthouse_count: _Optional[int] = ..., recent_optical_measurement_count: _Optional[int] = ..., global_scene_count: _Optional[int] = ..., required_global_scene_count: _Optional[int] = ..., using_cached_global_scene: _Optional[bool] = ..., decoded_optical_age_s: _Optional[float] = ..., raw_optical_age_s: _Optional[float] = ..., recent_raw_optical_measurement_count: _Optional[int] = ...) -> None: ...
 
 class SetReferenceRequest(_message.Message):
     __slots__ = ("readiness_token",)

@@ -662,6 +662,71 @@ class TestAutoReference:
             feature.tracking_state for feature in rediscovering
         } == {device_pb2.TrackingState.TRACKING_STATE_RECOVERING}
 
+    def test_startup_readiness_restarts_stalled_decoder(self, tmp_path):
+        """Cold-start readiness must not wait forever on a wedged decoder."""
+        servicer = _make_leader(
+            tmp_path,
+            auto_reference=False,
+            cumulative_clutch=True,
+        )
+        servicer._tracker_health_enabled = True
+        servicer.Connect(None, None)
+        servicer._device.advance_optical_timestamp = False
+        servicer._device.optical_age_s = 0.4
+        servicer._device.optical_measurement_count = 0
+        servicer._device.optical_lighthouse_count = 0
+        servicer._device.advance_raw_optical_timestamp = True
+        servicer._device.raw_optical_age_s = 0.0
+        servicer._decoder_restart_after_s = 0.0
+
+        snapshot = servicer._update_tracking_readiness()
+        deadline = time.monotonic() + 0.5
+        while (
+            servicer._device.restart_tracker_calls == 0
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.005)
+
+        assert servicer._device.restart_tracker_calls == 1
+        assert snapshot.state == (
+            device_pb2.TrackingReadinessState.TRACKING_READINESS_STATE_STARTING
+        )
+        assert "automatic" in snapshot.reason
+
+    def test_startup_readiness_restarts_silent_optical_monitor(self, tmp_path):
+        """The captured cold-start failure had both health streams go silent."""
+        servicer = _make_leader(
+            tmp_path,
+            auto_reference=False,
+            cumulative_clutch=True,
+        )
+        servicer._tracker_health_enabled = True
+        servicer.Connect(None, None)
+        servicer._device.advance_optical_timestamp = False
+        servicer._device.optical_age_s = 0.4
+        servicer._device.optical_measurement_count = 0
+        servicer._device.optical_lighthouse_count = 0
+        servicer._device.advance_raw_optical_timestamp = False
+        servicer._device.raw_optical_age_s = 0.4
+        servicer._device.raw_optical_measurement_count = 0
+        servicer._decoder_restart_without_raw_after_s = 0.0
+
+        snapshot = servicer._update_tracking_readiness()
+        deadline = time.monotonic() + 0.5
+        while (
+            servicer._device.restart_tracker_calls == 0
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.005)
+
+        assert servicer._device.restart_tracker_calls == 1
+        assert snapshot.state == (
+            device_pb2.TrackingReadinessState.TRACKING_READINESS_STATE_STARTING
+        )
+        assert (
+            "raw and decoded optical streams remained silent" in snapshot.reason
+        )
+
     def test_prolonged_total_optical_silence_restarts_tracker_backend(
         self, tmp_path
     ):
