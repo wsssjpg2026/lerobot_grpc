@@ -308,8 +308,8 @@ service Robot {
     rpc GetStatus(google.protobuf.Empty) returns (DeviceInfo);
 
     // 把当前末端 FK 重锁为 pose_delta 基准 T_zero(与 Teleoperator.SetReference 对偶)。
-    // 离合器再接合时客户端先调本 RPC 再调 leader SetReference,保证"当前手=当前臂"。
-    // 不支持 pose_delta 的 follower 返回 UNIMPLEMENTED。
+    // 离合器再接合时，客户端先验证 leader reference，再调本 RPC；两者都成功前禁止发送动作。
+    // 支持模式分流的 follower 可在 joint 模式返回 no-op 成功；未实现该契约的 follower 返回 UNIMPLEMENTED。
     rpc SetReference(google.protobuf.Empty) returns (google.protobuf.Empty);
 
     // Fail-closed session gate used by collection orchestration during

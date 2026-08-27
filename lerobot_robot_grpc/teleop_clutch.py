@@ -4,8 +4,9 @@ The teleop client is "只搬运" (pure transport).  The leader owns the freeze:
 on a disengage edge it stops updating the published arm offset but keeps
 reading the gripper every ``GetAction`` — the official PikaAnyArm clutch
 gates the arm only, the gripper stays live.  The client's job is edge
-detection and the relatch sequence (follower ``SetReference`` → leader
-``SetReference``).
+detection and the relatch sequence (leader ``SetReference`` → follower
+``SetReference``).  The client does not transport a new action until both
+reference operations have succeeded.
 
 These pure functions pin the per-iteration clutch logic so the bench-found
 stale-action bug (#12) is covered by unit tests:
@@ -30,21 +31,28 @@ def auto_clutch_step(
     *,
     status: device_pb2.DeviceStatus,
     engaged: bool,
+    reference_pending: bool = False,
     raw_action: RobotAction,
     fetch_action: Callable[[], RobotAction],
-    relatch: Callable[[], None],
+    relatch: Callable[[], bool | None],
 ) -> tuple[bool, RobotAction, bool]:
     """One iteration of the auto (leader-status) clutch.
 
     Args:
         status: leader ``GetStatus`` result this iteration.
         engaged: client-side follow flag from the previous iteration.
+        reference_pending: the leader has accepted the operator's recovery
+            confirmation and is explicitly waiting for a reference commit.
+            During this state ``GetStatus`` remains IDLE, so status-edge
+            detection alone cannot resume teleop.
         raw_action: action fetched at the top of this iteration (before the
             status poll).  On the engage edge this is the stale frozen action
             and is discarded (#12).
         fetch_action: callable returning a fresh action from the leader.
-        relatch: callable performing follower ``SetReference`` → leader
-            ``SetReference`` (order matters, see ``relatch`` in the script).
+        relatch: callable performing the reference transaction.  Returning
+            exactly ``False`` means it was not committed and action transport
+            must remain held; ``None`` is retained as a successful legacy
+            callback result.
 
     Returns:
         ``(engaged, action_to_send, should_send)``.  ``should_send`` is True
@@ -54,12 +62,18 @@ def auto_clutch_step(
         leader).
     """
     engaged_now = status == device_pb2.DeviceStatus.COLLECTION
-    if engaged_now and not engaged:
+    recovery_relatch = bool(
+        reference_pending and status == device_pb2.DeviceStatus.IDLE
+    )
+    if (engaged_now and not engaged) or recovery_relatch:
         # Engage edge: re-latch both bases FIRST, then fetch a fresh action.
         # The pre-relatch action is the frozen pre-hold offset (#12).
-        relatch()
+        if relatch() is False:
+            return False, raw_action, False
         raw_action = fetch_action()
-    engaged = engaged_now
+        engaged = True
+    else:
+        engaged = engaged_now
     should_send = status in (
         device_pb2.DeviceStatus.COLLECTION,
         device_pb2.DeviceStatus.IDLE,
@@ -73,7 +87,7 @@ def keyboard_clutch_step(
     key_toggled: bool,
     raw_action: RobotAction,
     fetch_action: Callable[[], RobotAction],
-    relatch: Callable[[], None],
+    relatch: Callable[[], bool | None],
 ) -> tuple[bool, RobotAction, bool]:
     """One iteration of the keyboard (local) clutch.
 
@@ -86,6 +100,7 @@ def keyboard_clutch_step(
     if key_toggled:
         engaged = not engaged
         if engaged:
-            relatch()
+            if relatch() is False:
+                return False, raw_action, False
             raw_action = fetch_action()
     return engaged, raw_action, engaged

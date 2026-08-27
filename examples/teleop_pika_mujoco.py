@@ -8,7 +8,7 @@ UR/Piper semantics:
 - **Enter** — first alignment: ``SetReference`` on the leader, teleop engages.
 - **Pika double-click** (command-state change) — toggles follow / hold.
   Hold = the arm stops at its current pose; re-engage = both bases re-latch
-  (follower FK ``T_zero`` first, then leader ``T_begin``), so the current
+  (leader ``T_begin`` first, then follower FK ``T_zero``), so the current
   hand pose maps onto the current arm pose — no crawl back to Connect home.
 - **Gripper** (official PikaAnyArm semantics): the clutch gates the arm only.
   In ``auto`` mode the client keeps transporting actions while holding — the
@@ -18,11 +18,12 @@ UR/Piper semantics:
 
 Flow::
 
-    1. Connect leader (blocks until tracker solver converges, up to 60s)
+    1. Connect leader (returns after hardware setup)
     2. Connect follower
-    3. Prompt: "Hold tracker forward, press Enter to align"
-    4. teleop.set_reference()  →  locks current pose as delta origin, engages
-    5. Teleop loop (get_action → send_action at --fps), gated by the clutch
+    3. Poll Tracker readiness until Lighthouse convergence is READY
+    4. Prompt: "Hold tracker forward, press Enter to align"
+    5. teleop.set_reference()  →  locks current pose as delta origin, engages
+    6. Teleop loop (get_action → send_action at --fps), gated by the clutch
 
 Clutch edge sources (``--clutch-source``):
 
@@ -30,7 +31,7 @@ Clutch edge sources (``--clutch-source``):
   IDLE = clutch off).  This is the leader→client channel for the Pika button.
 - ``keyboard``: press Enter in the terminal to toggle.  For bench/tests when
   the button is unavailable; the client owns the clutch and still sequences
-  follower.SetReference → leader.SetReference on every engage.
+  leader.SetReference → follower.SetReference on every engage.
 
 Usage::
 
@@ -50,47 +51,101 @@ import select
 import sys
 import time
 
-import grpc
-from google.protobuf.empty_pb2 import Empty
 from lerobot.processor import (
     RobotAction,
     RobotObservation,
     RobotProcessorPipeline,
     make_default_processors,
 )
+from lerobot.utils.errors import DeviceNotConnectedError
 from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.utils import init_logging, move_cursor_up
 
 from lerobot_robot_grpc.follower.config_grpc import GRPCFollowerConfig
 from lerobot_robot_grpc.follower.grpc_follower import GRPCFollower
 from lerobot_robot_grpc.leader.config_grpc import GRPCLeaderConfig
-from lerobot_robot_grpc.leader.grpc_leader import GRPCLeader
+from lerobot_robot_grpc.leader.grpc_leader import (
+    GRPCLeader,
+    ReferenceNotReadyError,
+)
 from lerobot_robot_grpc.protos import device_pb2
 from lerobot_robot_grpc.teleop_clutch import auto_clutch_step, keyboard_clutch_step
 
 logger = logging.getLogger(__name__)
 
 
-def relatch(robot: GRPCFollower, teleop: GRPCLeader) -> None:
-    """Re-engage sequence: follower re-locks ``T_zero`` at current FK FIRST,
-    then the leader re-locks ``T_begin``.  Order matters: if the leader's
-    zero offset reached the follower before its re-latch, the arm would
-    crawl back toward the Connect home.  The IK stays in the adapters —
-    this client only triggers, it does no math (#10: 采集进程只搬运).
+def relatch(robot: GRPCFollower, teleop: GRPCLeader) -> bool:
+    """Commit a failure-safe leader-then-follower reference transaction.
+
+    The leader readiness check is the fallible validation step, so it runs
+    before mutating the follower reference.  No action is sent until both
+    calls succeed.  If the follower call then fails, the next loop observes
+    the leader's COLLECTION state and retries the complete transaction while
+    transport remains held.  The IK stays in the adapters; this client only
+    triggers the transaction (#10: 采集进程只搬运).
     """
     try:
-        robot.stub.SetReference(Empty(), timeout=robot.data_timeout_s)
-    except grpc.RpcError as e:
-        # UNIMPLEMENTED = follower without pose_delta base (e.g. joint-space).
-        # Teleop still works; re-engage just won't re-latch T_zero.
-        logger.warning("follower SetReference failed (%s) — continuing anyway.", e)
-    teleop.set_reference()
-    logger.info("Clutch re-engaged: T_zero and T_begin re-latched.")
+        teleop.set_reference()
+    except ReferenceNotReadyError as exc:
+        logger.warning("Leader reference is not ready; remaining held: %s", exc)
+        return False
+    except DeviceNotConnectedError as exc:
+        logger.error("Leader SetReference failed; remaining held: %s", exc)
+        return False
+    try:
+        robot.set_reference()
+    except DeviceNotConnectedError as exc:
+        logger.error("Follower SetReference failed; remaining held: %s", exc)
+        return False
+    logger.info("Clutch re-engaged: T_begin and T_zero re-latched.")
+    return True
 
 
 def key_pressed() -> bool:
     """Non-blocking stdin check for the ``--clutch-source keyboard`` toggle."""
     return bool(select.select([sys.stdin], [], [], 0)[0])
+
+
+def wait_for_tracking_readiness(
+    teleop: GRPCLeader,
+    *,
+    timeout_s: float = 120.0,
+) -> str | None:
+    """Wait for a current reference token before prompting the operator."""
+    deadline = time.monotonic() + timeout_s
+    last_summary: tuple[int, str] | None = None
+    last_log = 0.0
+    while True:
+        readiness = teleop.get_tracking_readiness()
+        state = int(readiness.state)
+        if state == (
+            device_pb2.TrackingReadinessState.TRACKING_READINESS_STATE_READY
+        ):
+            return str(readiness.token or "")
+        if state == (
+            device_pb2.TrackingReadinessState.
+            TRACKING_READINESS_STATE_NOT_APPLICABLE
+        ):
+            return None
+        if state == (
+            device_pb2.TrackingReadinessState.TRACKING_READINESS_STATE_ERROR
+        ):
+            raise RuntimeError(f"Tracker readiness failed: {readiness.reason}")
+        now = time.monotonic()
+        summary = (state, str(readiness.reason))
+        if summary != last_summary or now - last_log >= 10.0:
+            state_name = device_pb2.TrackingReadinessState.Name(state).removeprefix(
+                "TRACKING_READINESS_STATE_"
+            )
+            logger.info("Tracker readiness %s: %s", state_name, readiness.reason)
+            last_summary = summary
+            last_log = now
+        if now >= deadline:
+            raise TimeoutError(
+                f"Tracker did not become ready within {timeout_s:.0f}s: "
+                f"{readiness.reason}"
+            )
+        time.sleep(0.2)
 
 
 def main():
@@ -122,8 +177,7 @@ def main():
     init_logging()
 
     # --- Create devices ---
-    # warmup_timeout_s=120 covers the libsurvive solver convergence wait
-    # (the Connect RPC blocks until get_pose() returns valid data, up to 60s).
+    # Connect establishes hardware; readiness is polled explicitly below.
     teleop = GRPCLeader(
         GRPCLeaderConfig(
             address=args.leader_address,
@@ -141,10 +195,6 @@ def main():
 
     # --- Connect ---
     logger.info("Connecting to Pika Sense leader at %s ...", args.leader_address)
-    logger.info(
-        "(Connect blocks until tracker solver converges — "
-        "may take 30-60s on first connect)"
-    )
     teleop.connect()
     logger.info("Pika Sense leader connected.")
 
@@ -152,18 +202,26 @@ def main():
     robot.connect()
     logger.info("MuJoCo follower connected.")
 
-    # --- Alignment step ---
-    print("\n" + "=" * 55)
-    print("  Tracker 就绪。建议先等 10–15 秒让定位收敛")
-    print("  拿起 Pika Sense（和 Vive Tracker 一体），夹爪朝前")
-    print("  与当前 SO-101 末端姿态对应后按 Enter 对齐并开始跟随")
-    print("  之后 Pika 双击：停 / 跟。停止时臂停在当前末端")
-    print("  再双击重锁：当前手 = 当前臂，从这里继续跟")
-    print("  两端须用同一套代码（发的是相对对齐姿态的当前偏移）")
-    print("=" * 55)
-    input()
-
-    teleop.set_reference()
+    # --- Readiness + alignment step ---
+    while True:
+        readiness_token = wait_for_tracking_readiness(teleop)
+        print("\n" + "=" * 55)
+        print("  Tracker 已收敛，现在可以调整 Pika 参考姿态")
+        print("  拿起 Pika Sense（和 Vive Tracker 一体），夹爪朝前")
+        print("  与当前 SO-101 末端姿态对应后按 Enter 对齐并开始跟随")
+        print("  之后 Pika 双击：停 / 跟。停止时臂停在当前末端")
+        print("  再双击重锁：当前手 = 当前臂，从这里继续跟")
+        print("  两端须用同一套代码（发的是相对对齐姿态的当前偏移）")
+        print("=" * 55)
+        input()
+        try:
+            teleop.set_reference(readiness_token=readiness_token)
+        except ReferenceNotReadyError as exc:
+            logger.warning(
+                "Tracker readiness changed before alignment; retrying: %s", exc
+            )
+            continue
+        break
     logger.info("Reference set — delta origin locked to current tracker pose.")
 
     # --- Teleop loop ---
@@ -223,6 +281,11 @@ def main():
                 engaged, raw_action, should_send = auto_clutch_step(
                     status=status,
                     engaged=engaged,
+                    reference_pending=(
+                        teleop.last_tracking_state
+                        == device_pb2.TrackingState.
+                        TRACKING_STATE_REFERENCE_PENDING
+                    ),
                     raw_action=raw_action,
                     fetch_action=teleop.get_action,
                     relatch=lambda: relatch(robot, teleop),

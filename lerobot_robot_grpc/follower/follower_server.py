@@ -78,11 +78,11 @@ class FollowerServicer(device_pb2_grpc.RobotServicer, ABC):
     def SetReference(self, request, context):
         """Re-latch the pose_delta base pose (T_zero) at the current FK.
 
-        Default implementation: not supported.  Joint-space followers have no
-        Cartesian reference to latch, so they must fail loudly rather than
-        pretend success.  ``MuJoCoSO101Servicer`` (pose_delta mode) overrides
-        this to re-lock ``T_zero`` from the current gripperframe FK — the
-        clutch re-engage contract (wayfinder #10): current hand = current arm.
+        Default implementation: not supported.  Mode-aware adapters may return
+        a documented no-op success in joint mode because there is no Cartesian
+        reference to mutate.  Generic followers that do not implement this
+        contract return UNIMPLEMENTED.  ``MuJoCoSO101Servicer`` overrides it
+        to re-lock ``T_zero`` in pose_delta mode and no-op in joint mode.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details(

@@ -195,8 +195,9 @@ class PikaSenseServicer(LeaderServicer):
     is **frozen at its last value** — never identity — so the follower holds
     its stop pose.  ``GetStatus`` reports ``COLLECTION`` (following) /
     ``IDLE`` (clutch off) as the leader→client edge channel; on the engage
-    edge the client must call the follower's ``SetReference`` before this
-    servicer's ``SetReference`` (current hand = current arm).
+    edge the client commits this servicer's ``SetReference`` before the
+    follower's ``SetReference`` while action transport remains held (current
+    hand = current arm).
 
     Parameters
     ----------
@@ -211,11 +212,13 @@ class PikaSenseServicer(LeaderServicer):
         Defaults to ``device.get_command_state``; injectable so the clutch
         state machine (#10) is testable without hardware.
     auto_reference
-        When True, block Connect until fresh timestamped poses settle and the
-        configured operator confirmation succeeds, then latch ``T_begin`` and
-        engage.  This supports clients without an alignment step, such as
-        ``lerobot-teleoperate``.  Default False leaves reference capture to
-        the collection session's follower-then-leader SetReference sequence.
+        When True, a readiness poll latches ``T_begin`` and engages after fresh
+        timestamped poses settle, without operator confirmation.  The real
+        gRPC ``Connect`` RPC still returns immediately; clients must poll
+        ``GetTrackingReadiness`` before relying on motion.  This supports
+        clients without an alignment step, such as ``lerobot-teleoperate``.
+        Default False leaves explicit reference capture to the collection
+        session's leader-then-follower SetReference transaction.
     arm_prefix
         Optional action namespace such as ``"left"`` for S1.  The default
         unprefixed schema remains compatible with SO101.
@@ -411,6 +414,7 @@ class PikaSenseServicer(LeaderServicer):
         self._last_seen_tracker_source_ts: float | None = None
         self._last_seen_tracker_raw_optical_ts: float | None = None
         self._last_seen_tracker_optical_ts: float | None = None
+        self._last_readiness_seen_optical_ts: float | None = None
         self._last_fresh_received_monotonic: float | None = None
         self._last_valid_tracker_sample: TrackerSample | None = None
         self._pending_tracker_samples: deque[TrackerSample] = deque()
@@ -462,13 +466,13 @@ class PikaSenseServicer(LeaderServicer):
         # semantics).  While disengaged — or pending a re-engage relatch — the
         # published offset is frozen at its last value (never identity), so
         # the follower holds the stop pose.  ``_pending_relatch`` is set on
-        # the engage edge and cleared by SetReference: the client sequences
-        # follower.SetReference() → leader.SetReference(), so the arm never
-        # sees a zero offset against a stale T_zero.
+        # the engage edge and cleared by SetReference: the client commits the
+        # leader reference, then the follower reference, while suppressing
+        # action transport until both succeed.
         self._clutched = False
         self._pending_relatch = False
         # Collection mode separates the operator's quick-squeeze confirmation
-        # from the later follower -> leader reference commit.  Keeping this
+        # from the later leader -> follower reference commit.  Keeping this
         # state explicit prevents a single fresh sample from being mistaken
         # for a completed recovery transaction.
         self._reference_confirmation_pending = False
@@ -797,6 +801,12 @@ class PikaSenseServicer(LeaderServicer):
         raw_light_visible = (
             raw_count > 0 and raw_age_s <= self._READINESS_OPTICAL_STALE_S
         )
+        if raw_count > 0:
+            # This is session history, not just current visibility.  Once the
+            # raw monitor has worked, later total silence is trustworthy
+            # evidence of a physical occlusion and must not trigger the
+            # conservative no-telemetry restart fallback.
+            self._raw_optical_telemetry_observed = True
         if self._decoder_restart_failed:
             snapshot = replace(
                 snapshot,
@@ -811,6 +821,20 @@ class PikaSenseServicer(LeaderServicer):
                 token="",
             )
         elif decoded_healthy:
+            # Readiness polling can be the only consumer before the operator
+            # confirms alignment.  Keep the same healthy-decoder baseline as
+            # the runtime GetAction path so a later decoded-stream wedge is
+            # recoverable even when the deployed raw monitor emits nothing.
+            # A cached pose is returned on every poll, so only a distinct
+            # optical timestamp may refresh this clock; poll frequency must
+            # never masquerade as optical freshness.
+            if (
+                sample.optical_timestamp_s
+                != self._last_readiness_seen_optical_ts
+            ):
+                self._last_readiness_seen_optical_ts = sample.optical_timestamp_s
+                self._last_fresh_received_monotonic = sample.received_monotonic_s
+                self._unverified_decoder_restart_attempted = False
             self._raw_optical_reacquiring_since = None
             if snapshot.state == (
                 device_pb2.TrackingReadinessState.TRACKING_READINESS_STATE_READY
@@ -823,6 +847,10 @@ class PikaSenseServicer(LeaderServicer):
             restart_started = self._maybe_restart_tracker_decoder(
                 now,
                 raw_light_visible=raw_light_visible,
+                allow_unverified=bool(
+                    not self._raw_optical_telemetry_observed
+                    and self._last_fresh_received_monotonic is not None
+                ),
             )
             if restart_started:
                 snapshot = replace(
@@ -832,9 +860,14 @@ class PikaSenseServicer(LeaderServicer):
                         TRACKING_READINESS_STATE_STARTING
                     ),
                     reason=(
-                        "raw Lighthouse light was detected but the Gen2 "
-                        "sync/sweep decoder stalled; automatic tracker "
-                        "decoder restart is in progress"
+                        (
+                            "raw Lighthouse light was detected but the Gen2 "
+                            "sync/sweep decoder stalled"
+                            if raw_light_visible
+                            else "decoded tracking remained silent while raw "
+                            "Lighthouse telemetry was unavailable"
+                        )
+                        + "; automatic tracker decoder restart is in progress"
                     ),
                 )
         self._last_readiness = snapshot
@@ -1079,6 +1112,7 @@ class PikaSenseServicer(LeaderServicer):
         self._last_seen_tracker_source_ts = sample.source_timestamp_s
         self._last_seen_tracker_raw_optical_ts = sample.raw_optical_timestamp_s
         self._last_seen_tracker_optical_ts = sample.optical_timestamp_s
+        self._last_readiness_seen_optical_ts = sample.optical_timestamp_s
         self._last_fresh_received_monotonic = sample.received_monotonic_s
         self._last_valid_tracker_sample = sample
         self._pending_tracker_samples.clear()
@@ -1486,6 +1520,7 @@ class PikaSenseServicer(LeaderServicer):
         self._last_seen_tracker_source_ts = None
         self._last_seen_tracker_raw_optical_ts = None
         self._last_seen_tracker_optical_ts = None
+        self._last_readiness_seen_optical_ts = None
         self._last_fresh_received_monotonic = None
         self._last_valid_tracker_sample = None
         self._pending_tracker_samples.clear()
@@ -1627,6 +1662,7 @@ class PikaSenseServicer(LeaderServicer):
         self._last_seen_tracker_source_ts = sample.source_timestamp_s
         self._last_seen_tracker_raw_optical_ts = sample.raw_optical_timestamp_s
         self._last_seen_tracker_optical_ts = sample.optical_timestamp_s
+        self._last_readiness_seen_optical_ts = sample.optical_timestamp_s
         self._last_fresh_received_monotonic = sample.received_monotonic_s
         self._last_tracker_health_reason = None
         self._raw_optical_reacquiring = False
@@ -2007,11 +2043,12 @@ class PikaSenseServicer(LeaderServicer):
             # --- Clutch edge (Pika quick gripper squeeze, #10) --------------
             # Official /teleop_trigger semantics: any Command change toggles
             # follow / hold.  On the engage edge the publish stays frozen
-            # until SetReference lands — the client sequences follower
-            # SetReference → leader SetReference so the follower never applies
-            # a zero offset against a stale reference (no crawl back to
-            # Connect home).  On the disengage edge the freeze is immediate:
-            # the follower keeps receiving the last offset and holds.
+            # until SetReference lands.  The client commits leader then
+            # follower references and suppresses transport until both calls
+            # succeed, so no zero offset reaches a stale follower reference
+            # (no crawl back to Connect home).  On the disengage edge the
+            # freeze is immediate: the follower keeps receiving the last
+            # offset and holds.
             try:
                 command_now = int(self._command_state_provider())
             except Exception:
@@ -2514,9 +2551,10 @@ class PikaSenseServicer(LeaderServicer):
         """Lock T_begin at the current tracker pose, zero the offset, engage.
 
         Two call sites: the initial Enter alignment and every clutch
-        re-engage (#10).  The client calls the follower's ``SetReference``
-        *first* on a re-engage so both sides relatch their base pose before
-        any fresh offset is applied — current hand = current arm.
+        re-engage (#10).  The client validates and commits this leader
+        reference first, then re-latches the follower while action transport
+        remains held.  Motion resumes only after both calls succeed — current
+        hand = current arm.
         """
         with self._lock:
             before = self._update_tracking_readiness()

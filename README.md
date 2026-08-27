@@ -35,6 +35,8 @@ This pulls in:
 - `lerobot[hardware]` — keyboard controls (**pynput**), pyserial, deepdiff
 - `lerobot[viz]` — real-time visualization (rerun-sdk, foxglove-sdk)
 - `lerobot[feetech]` — Feetech motor SDK for SO101 hardware
+- `mujoco` and `lerobot[kinematics]` — simulation plus pose-delta FK/IK
+- `agx-pypika` — the pinned Pika Sense SDK fork
 
 ### Option B: Client only (recording/training machine)
 
@@ -47,6 +49,14 @@ pip install -e ".[client]"
 ```bash
 pip install -e ".[server]"
 ```
+
+Real SO101 `--action_mode=pose_delta` uses MuJoCo as its shared kinematics
+oracle, so install `.[server,sim]` for that mode. The plain `.[server]` extra
+is sufficient for joint-space hardware serving.
+
+> **Wire compatibility:** this development line changes both the unary
+> `SendAction` response and the Teleoperator `SetReference` request. Upgrade
+> gRPC clients and servers together; mixed revisions are unsupported.
 
 ### Windows notes
 
@@ -168,9 +178,9 @@ arrange Pika and press Enter only after the global scene has enough spatial
 diversity and the one-second optical stability window has converged. On a
 fresh calibration the client guides the operator through at least four
 ``move to a different pose -> hold for 3-5 seconds`` captures. A valid cached
-map covering the active Lighthouse cohort skips that recapture. Collection latches
-the follower, captures follower reference then leader reference, verifies an
-identity delta, and only then releases motion. During teleoperation a rapid
+map covering the active Lighthouse cohort skips that recapture. Collection
+holds the follower, captures the leader reference then the follower reference,
+verifies an identity delta, and only then releases motion. During teleoperation a rapid
 Pika gripper squeeze toggles clutch. Any optical interruption long enough to
 hold motion invalidates the session reference and suppresses every pose
 action. Terminal 4 remains in `TRACKING_RECOVERING` for as long as needed while
@@ -178,7 +188,7 @@ the operator returns Pika to Lighthouse view and fresh optical samples settle.
 It then latches `TRACKING_CONFIRM_REQUIRED`: the operator may adjust Pika into
 the desired hand/robot alignment before rapidly squeezing the gripper.
 `TRACKING_REFERENCE_PENDING` acknowledges that squeeze while Collection runs
-the follower-reference → leader-reference → identity transaction. A temporary
+the leader-reference → follower-reference → identity transaction. A temporary
 reference precondition failure returns to recovery without ending the session;
 only a successful transaction emits `TRACKING_READY` and resumes motion.
 Initial alignment reference capture allows up to 5 mm / 2 degrees of short
@@ -236,7 +246,7 @@ client stream itself stops.
 Direct stock `lerobot-teleoperate` is only a local data-plane/debug adapter;
 it does not write a dataset or provide Collection's hold/re-reference transaction.
 `collection_grpc` is the recording/orchestration
-path: it latches follower then leader references, stores the effective 8D
+path: it latches leader then follower references, stores the effective 8D
 target in standard `action`, stores the 22D state in `observation.state`, and
 adds raw `teleop.intent` plus compact
 `safety=[flags, applied_mask, valid]`; collision-clipped/held frames have

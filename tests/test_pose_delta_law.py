@@ -388,6 +388,21 @@ class TestFrameCap:
 
 
 class TestStaleHold:
+    def test_first_stale_frame_after_reference_holds_identity(self):
+        """A stream gap immediately after relatch must never enter IK."""
+        law = _law()
+        qpos = _home_qpos()
+        law.lock_reference(qpos)
+
+        held = law.solve(_delta(0.20, grip=50.0), qpos, stale=True)
+
+        assert held.held and held.stale
+        assert held.reason == "stale"
+        for index, joint in enumerate(BODY):
+            assert held.joint_action[f"{joint}.pos"] == pytest.approx(
+                np.degrees(qpos[index])
+            )
+
     def test_stale_flag_holds_last_action(self):
         law = _law()
         qpos = _home_qpos()

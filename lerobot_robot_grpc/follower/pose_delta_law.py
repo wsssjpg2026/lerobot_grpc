@@ -27,15 +27,17 @@ Follower safety stack (shared by sim and real adapters):
    home/rest and alternate-elbow branches when the fast candidate fails or
    jumps.
 4. IK acceptance — the legacy 0.3 m per-axis FK check remains a corruption
-   guard, while a candidate with more than 10 mm operational position
-   residual is not allowed to become a fallback motion branch.
+   guard.  Robot adapters may additionally configure an operational residual
+   gate (the S1 adapter uses 10 mm); adapters that leave it unset retain the
+   legacy corruption check only.
 5. Per-joint per-frame step cap — plays the rate-constraint role of the
    official >30° 200 Hz linear interpolation: a walked-to solution advances
    at most max_dq_frame_deg per action frame.
 6. Collision gating checks the raw IK endpoint and the actual capped path.
    A robot adapter may inject semantic full-body geometry and gripper coupling;
    otherwise model-capability auto-detection supplies the legacy self-check.
-7. A candidate more than 30° from both the previous full IK branch and the
+7. When branch-jump rejection is enabled by the robot adapter (the S1 adapter
+   uses 30°), a candidate far from both the previous full IK branch and the
    committed, frame-capped command triggers same-frame fallback.  If no
    continuous branch or safe return remains, the command is rejected and the
    last safe target is held.  A velocity cap cannot turn a discontinuous IK
@@ -870,7 +872,7 @@ class PoseDeltaLaw:
         assert arm_ref is not None
 
         # --- Stale hold: leader stream died -> freeze at the last action ----
-        if stale and self._last_joint_action is not None:
+        if stale:
             measured_arm = qpos_rad[list(self._body_dofs)].copy()
             self._last_sent = measured_arm
             self._last_solved = None

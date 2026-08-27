@@ -739,6 +739,121 @@ class TestAutoReference:
         )
         assert "automatic tracker decoder restart" not in snapshot.reason
 
+    def test_startup_readiness_missing_raw_telemetry_gets_one_blind_restart(
+        self, tmp_path
+    ):
+        """Readiness polling must recover the deployed no-raw-monitor case.
+
+        Collection waits in GetTrackingReadiness before teleop starts, so the
+        runtime GetAction watchdog cannot repair a decoded stream that wedges
+        during alignment.
+        """
+        servicer = _make_leader(
+            tmp_path,
+            auto_reference=False,
+            cumulative_clutch=True,
+        )
+        servicer._tracker_health_enabled = True
+        servicer._device.advance_raw_optical_timestamp = False
+        servicer._device.raw_optical_age_s = 100.0
+        servicer._device.raw_optical_measurement_count = 0
+        servicer.Connect(None, None)
+
+        # Establish that decoded tracking was healthy in this readiness-only
+        # session, then reproduce the second-occlusion decoder silence.
+        servicer._update_tracking_readiness()
+        assert servicer._last_fresh_received_monotonic is not None
+        servicer._device.advance_timestamp = False
+        servicer._device.advance_optical_timestamp = False
+        servicer._device.optical_age_s = 0.4
+        servicer._device.optical_measurement_count = 0
+        servicer._device.optical_lighthouse_count = 0
+        servicer._last_fresh_received_monotonic -= 0.6
+        servicer._decoder_unverified_restart_after_s = 0.0
+
+        snapshot = servicer._update_tracking_readiness()
+        deadline = time.monotonic() + 0.5
+        while (
+            servicer._device.restart_tracker_calls == 0
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.005)
+
+        assert servicer._device.restart_tracker_calls == 1
+        assert snapshot.state == (
+            device_pb2.TrackingReadinessState.TRACKING_READINESS_STATE_STARTING
+        )
+        assert "automatic" in snapshot.reason
+
+    def test_startup_readiness_proven_raw_occlusion_does_not_restart_blindly(
+        self, tmp_path
+    ):
+        """Once raw-light telemetry worked, its silence proves occlusion."""
+        servicer = _make_leader(
+            tmp_path,
+            auto_reference=False,
+            cumulative_clutch=True,
+        )
+        servicer._tracker_health_enabled = True
+        servicer.Connect(None, None)
+        servicer._update_tracking_readiness()
+        assert servicer._raw_optical_telemetry_observed is True
+
+        servicer._device.advance_timestamp = False
+        servicer._device.advance_optical_timestamp = False
+        servicer._device.advance_raw_optical_timestamp = False
+        servicer._device.optical_age_s = 0.4
+        servicer._device.optical_measurement_count = 0
+        servicer._device.optical_lighthouse_count = 0
+        servicer._device.raw_optical_age_s = 0.4
+        servicer._device.raw_optical_measurement_count = 0
+        servicer._last_fresh_received_monotonic -= 0.6
+        servicer._decoder_unverified_restart_after_s = 0.0
+
+        snapshot = servicer._update_tracking_readiness()
+
+        assert servicer._device.restart_tracker_calls == 0
+        assert snapshot.state != (
+            device_pb2.TrackingReadinessState.TRACKING_READINESS_STATE_STARTING
+        )
+
+    def test_startup_readiness_fresh_decoded_pose_arms_next_blind_recovery(
+        self, tmp_path
+    ):
+        """A real decoded recovery starts a new one-shot loss episode."""
+        servicer = _make_leader(
+            tmp_path,
+            auto_reference=False,
+            cumulative_clutch=True,
+        )
+        servicer._tracker_health_enabled = True
+        servicer._device.advance_raw_optical_timestamp = False
+        servicer._device.raw_optical_age_s = 100.0
+        servicer._device.raw_optical_measurement_count = 0
+        servicer.Connect(None, None)
+        servicer._update_tracking_readiness()
+
+        # Model a completed first blind-restart episode.  A distinct decoded
+        # optical timestamp proves recovery and must re-arm the one-shot guard.
+        servicer._unverified_decoder_restart_attempted = True
+        servicer._update_tracking_readiness()
+        assert servicer._unverified_decoder_restart_attempted is False
+
+        servicer._device.advance_timestamp = False
+        servicer._device.advance_optical_timestamp = False
+        servicer._device.optical_age_s = 0.4
+        servicer._device.optical_measurement_count = 0
+        servicer._device.optical_lighthouse_count = 0
+        servicer._last_fresh_received_monotonic -= 0.6
+        servicer._decoder_unverified_restart_after_s = 0.0
+
+        snapshot = servicer._update_tracking_readiness()
+
+        assert servicer._device.restart_tracker_calls == 1
+        assert snapshot.state == (
+            device_pb2.TrackingReadinessState.TRACKING_READINESS_STATE_STARTING
+        )
+
     def test_prolonged_total_optical_silence_stays_lost_without_restart(
         self, tmp_path
     ):

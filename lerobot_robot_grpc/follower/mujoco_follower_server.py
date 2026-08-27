@@ -303,10 +303,11 @@ class MuJoCoSO101Servicer(FollowerServicer):
         """Re-lock T_arm_ref at the current gripperframe FK.
 
         Clutch re-engage contract (wayfinder #10): the client calls this on the
-        engage edge before the leader's SetReference, so the next dT=0 action
-        maps onto the arm's current pose instead of pulling it back to the
-        Connect home.  Joint targets / IK seed / ctrl are deliberately untouched
-        -- the arm must not move at re-engage.
+        engage transaction after the leader's SetReference and before action
+        transport resumes, so the next dT=0 action maps onto the arm's current
+        pose instead of pulling it back to the Connect home.  Joint targets /
+        IK seed / ctrl are deliberately untouched -- the arm must not move at
+        re-engage.
 
         In joint mode this is a no-op (no Cartesian reference exists).
         """

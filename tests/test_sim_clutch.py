@@ -173,7 +173,7 @@ class TestLeaderClutch:
 
     def test_reengage_stays_frozen_until_set_reference(self, tmp_path):
         """The engage edge alone must not unfreeze: the client sequences
-        follower.SetReference → leader.SetReference before fresh offsets
+        leader.SetReference → follower.SetReference before fresh offsets
         flow, so the arm never sees zero against a stale T_zero."""
         state = {"v": 1}
         servicer = _make_leader(tmp_path, lambda: state["v"])

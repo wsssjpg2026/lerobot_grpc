@@ -103,6 +103,39 @@ class TestAutoClutchStep:
         assert engaged is False
         assert should_send is False
 
+    def test_recovery_reference_pending_relatches_from_idle(self):
+        """Recovery confirmation is an explicit relatch edge even though
+        the leader remains IDLE until SetReference commits the transaction."""
+        calls: list[str] = []
+        engaged, action, should_send = auto_clutch_step(
+            status=device_pb2.DeviceStatus.IDLE,
+            engaged=False,
+            reference_pending=True,
+            raw_action=_stale(),
+            fetch_action=_fresh,
+            relatch=lambda: calls.append("relatch"),
+        )
+        assert engaged is True
+        assert should_send is True
+        assert calls == ["relatch"]
+        assert action == _fresh()
+
+    def test_failed_recovery_relatch_holds_and_retries(self):
+        """A rejected leader/follower reference must not leak an action."""
+        fetch_calls: list[str] = []
+        engaged, action, should_send = auto_clutch_step(
+            status=device_pb2.DeviceStatus.IDLE,
+            engaged=False,
+            reference_pending=True,
+            raw_action=_stale(),
+            fetch_action=lambda: fetch_calls.append("fetch") or _fresh(),
+            relatch=lambda: False,
+        )
+        assert engaged is False
+        assert should_send is False
+        assert fetch_calls == []
+        assert action == _stale()
+
 
 class TestKeyboardClutchStep:
     def test_toggle_off_stops_sending(self):
@@ -141,6 +174,18 @@ class TestKeyboardClutchStep:
         )
         assert engaged is True
         assert should_send is True
+        assert action == _stale()
+
+    def test_failed_relatch_keeps_keyboard_hold(self):
+        engaged, action, should_send = keyboard_clutch_step(
+            engaged=False,
+            key_toggled=True,
+            raw_action=_stale(),
+            fetch_action=_fresh,
+            relatch=lambda: False,
+        )
+        assert engaged is False
+        assert should_send is False
         assert action == _stale()
 
 
