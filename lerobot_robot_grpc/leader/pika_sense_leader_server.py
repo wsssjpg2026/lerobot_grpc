@@ -2079,16 +2079,17 @@ class PikaSenseServicer(LeaderServicer):
                                 "re-referencing locally."
                             )
                         else:
-                            # Collection mode owns the cross-endpoint commit.
-                            # Publish an explicit state and stay disengaged
-                            # until leader -> follower references succeed.
+                            # The external client/coordinator owns the
+                            # cross-endpoint commit. Publish an explicit state
+                            # and stay disengaged until leader -> follower
+                            # references succeed.
                             self._reference_confirmation_pending = True
                             self._clutched = False
                             self._pending_relatch = True
                             confirmation_accepted = True
                             logger.info(
                                 "TRACKER HEALTH: recovery confirmation accepted; "
-                                "awaiting Collection reference commit."
+                                "awaiting client reference commit."
                             )
                     else:
                         self._clutched = False

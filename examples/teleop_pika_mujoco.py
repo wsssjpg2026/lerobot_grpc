@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Pika Sense leader → MuJoCo SO-101 follower teleop with clutch (wayfinder #10).
+"""Pika Sense leader → MuJoCo pose-delta follower teleop with clutch.
 
 Replaces ``lerobot-teleoperate`` for the Pika Sense delta-pose workflow.
 Adds a mandatory alignment step, then a double-click clutch with official
@@ -150,7 +150,10 @@ def wait_for_tracking_readiness(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Pika Sense → MuJoCo SO-101 teleop with alignment + double-click clutch"
+        description=(
+            "Pika Sense → MuJoCo pose-delta follower teleop with "
+            "alignment + double-click clutch"
+        )
     )
     parser.add_argument(
         "--leader-address",
@@ -208,7 +211,7 @@ def main():
         print("\n" + "=" * 55)
         print("  Tracker 已收敛，现在可以调整 Pika 参考姿态")
         print("  拿起 Pika Sense（和 Vive Tracker 一体），夹爪朝前")
-        print("  与当前 SO-101 末端姿态对应后按 Enter 对齐并开始跟随")
+        print("  与当前机械臂末端姿态对应后按 Enter 对齐并开始跟随")
         print("  之后 Pika 双击：停 / 跟。停止时臂停在当前末端")
         print("  再双击重锁：当前手 = 当前臂，从这里继续跟")
         print("  两端须用同一套代码（发的是相对对齐姿态的当前偏移）")
@@ -234,7 +237,7 @@ def main():
         )
     else:
         print(
-            "\n🤖 遥操已开始！移动 Pika Sense 控制 SO-101。"
+            "\n🤖 遥操已开始！移动 Pika Sense 控制机械臂。"
             "Pika 双击切换 跟/停。Ctrl+C 退出。\n"
             "停止时臂冻结、夹爪仍跟手（官方语义）。\n"
         )

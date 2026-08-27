@@ -1128,9 +1128,10 @@ class TestAutoReference:
         assert servicer._decoder_restart_failed is True
 
     def test_collection_recovery_stays_confirmable_while_operator_repositions(
-        self, tmp_path
+        self, tmp_path, caplog
     ):
         """After optical convergence, the operator may align Pika before squeezing."""
+        caplog.set_level(logging.INFO)
         command_state = [0]
         servicer = _make_leader(
             tmp_path,
@@ -1182,6 +1183,8 @@ class TestAutoReference:
             feature.quality == device_pb2.FrameQuality.FRAME_QUALITY_DEGRADED
             for feature in pending
         )
+        assert "awaiting client reference commit" in caplog.text
+        assert "awaiting Collection reference commit" not in caplog.text
 
     def test_runtime_imu_drift_during_optical_occlusion_is_never_published(self, tmp_path):
         """A fused IMU pose is not a fresh optical observation.
