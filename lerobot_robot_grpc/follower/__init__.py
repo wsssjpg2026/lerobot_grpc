@@ -6,6 +6,7 @@ from .so101_follower_server import (
     SO101FollowerAdapted,
     SO101FollowerServicer,
 )
+from .mujoco_follower_server import MuJoCoSO101Servicer
 
 __all__ = [
     "GRPCFollower",
@@ -16,4 +17,5 @@ __all__ = [
     "CalibrationAbortedError",
     "SO101FollowerAdapted",
     "SO101FollowerServicer",
+    "MuJoCoSO101Servicer",
 ]

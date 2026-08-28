@@ -205,7 +205,7 @@ class BenchmarkServicer(FollowerServicer):
         return Empty()
 
     def SendAction(self, request, context):
-        return device_pb2.Action(features=[])
+        return device_pb2.ActionResult(features=[])
 
     def GetFeedback(self, request, context):
         return iter(())

@@ -1,10 +1,12 @@
 import logging
+import math
 import queue
 import sys
 import time
 import threading
 import traceback
 from collections.abc import Sequence
+from pathlib import Path
 from pprint import pformat
 from typing import Any
 
@@ -13,6 +15,14 @@ import numpy as np
 from google.protobuf.empty_pb2 import Empty
 
 from .follower_server import FollowerServicer
+from .mujoco_follower_server import (
+    BODY_JOINTS,
+    DEFAULT_GRIPPER_MAX_DISTANCE_MM,
+    HOME_JOINTS_DEG,
+    JOINTS,
+    norm_value_to_rad,
+)
+from .pose_delta_law import PoseDeltaLaw
 from .utils import (
     H264FrameEncoder,
     H264_AVAILABLE,
@@ -31,6 +41,7 @@ from lerobot.motors.feetech import (
 from lerobot.motors import MotorCalibration
 from lerobot.lerobot_types import RobotAction
 from lerobot_robot_grpc.protos import device_pb2
+from lerobot_robot_grpc.pose_delta_schema import build_pose_delta_feature_info
 from lerobot.utils.errors import DeviceNotConnectedError
 
 logger = logging.getLogger(__name__)
@@ -50,6 +61,35 @@ _PROTO_BY_PYTHON: dict[type, device_pb2.DataType] = {
     np.float32: device_pb2.DataType.FLOAT32,
     np.int32: device_pb2.DataType.INT32
 }
+
+# MuJoCo scene the real servicer loads as its FK/IK/max-reach oracle -- the
+# SAME model the sim adapter uses (wayfinder #03: one kinematics engine, only
+# the qpos source differs).  Only imported/loaded in pose_delta action mode.
+_DEFAULT_KINEMATICS_XML = (
+    Path(__file__).resolve().parents[2] / "assets" / "so101" / "scene.xml"
+)
+
+# Solver-bias rest posture for the REAL arm's pose_delta law (#07).
+#
+# This is NOT a pose the arm is ever commanded to -- Connect/SetReference
+# write nothing and teleop starts from whatever unpowered droop pose the
+# user parks the arm in.  It is where the DLS nullspace rest task and the
+# limit-escape re-seed point, and it must be REACHABLE: the sim home
+# (elbow +60 deg) sits past the real over-fold wall (+2 deg), so with it
+# every solve pinned into the wall/singularity and the R1 bench froze with
+# the body immovable while the gripper followed (residual 26.8 mm > 18 mm
+# hold, manip 0.0133 at the droop).
+#
+# Chosen offline (lrg, now lerobot-grpc-serve, /tmp/rest_scan.py, 2026-08-17) under the effective
+# limits (model n follower.json calibration n elbow wall +2 deg), against
+# the measured R1 droop seed (pan 6.3 / lift -2.4 / elbow +1.1 / wf +46.4 /
+# wr -5.6): manip 0.0134, FK radius 463 mm, all six 15 mm axis intents
+# tracked 14.8-15.2 mm at <= 0.3 mm residual with zero holds/escapes, and
+# commanded elbows stay -2.0..+1.2 deg (off the +2 wall, no limit-saturation
+# escape churn).  The old sim home under the same drive tracked nothing
+# (held 29/30 frames, residual ~27 mm).
+REAL_REST_POSTURE_DEG: tuple[float, ...] = (0.0, 30.0, -20.0, 0.0, 0.0)
+
 
 def _protobuf_type_for(python_type: type) -> device_pb2.DataType:
     """Maps a Python type to the corresponding protobuf DataType."""
@@ -173,11 +213,67 @@ class SO101FollowerServicer(FollowerServicer):
         camera_encoding: str = "h264",
         calibration_timeout_s: float = 300.0,
         bus_call_timeout_s: float = 5.0,
+        action_mode: str = "joint",
+        home_joints_deg: tuple[float, ...] = REAL_REST_POSTURE_DEG,
+        stale_timeout_s: float = 1.0,
+        max_dq_deg: float = 6.0,
+        max_dq_frame_deg: float = 6.7,
+        gripper_max_distance_mm: float = DEFAULT_GRIPPER_MAX_DISTANCE_MM,
+        elbow_max_deg: float | None = 2.0,
     ):
         self.robot = robot
         if camera_encoding not in ("jpeg", "h264"):
             raise ValueError(f"Unsupported camera_encoding '{camera_encoding}'; expected 'jpeg' or 'h264'.")
         self.camera_encoding = camera_encoding
+        if action_mode not in ("joint", "pose_delta"):
+            raise ValueError(
+                f"action_mode must be 'joint' or 'pose_delta', got {action_mode!r}"
+            )
+        self._action_mode = action_mode
+        # Action schema is mode-dependent (joint space vs the shared pose-delta
+        # schema); observation schema is mode-independent.
+        self._act_ft_info: dict[str, device_pb2.OneFeatureInfo] = (
+            build_pose_delta_feature_info()
+            if action_mode == "pose_delta"
+            else self._encode_feature_info(robot.action_features)
+        )
+        # --- Shared pose_delta law (the one law, sim + real) ----------------
+        # Real-arm adapter over the same PoseDeltaLaw the sim drives: this
+        # servicer only reads Present_Position -> rad as the FK/IK seed and
+        # writes the solved joint_action via send_action.  The MuJoCo model is
+        # loaded purely as a kinematics oracle (no sim state).  The law runs
+        # the PikaAnyArm official safety stack (see pose_delta_law.py):
+        # IK hard limits (model + measured calibration range + elbow wall),
+        # 30° jump warm-start reset, FK consistency 0.3 m, per-frame step cap,
+        # self-collision gate (auto-bypassed on SO-101's visual-only meshes).
+        self._law: PoseDeltaLaw | None = None
+        if action_mode == "pose_delta":
+            import mujoco
+
+            # mujoco ships no py.typed (same accepted category as the baseline).
+            # The oracle is fixed to the shared SO-101 scene (#03 mandate).
+            model = mujoco.MjModel.from_xml_path(  # pyright: ignore[reportAttributeAccessIssue]
+                str(_DEFAULT_KINEMATICS_XML)
+            )
+            self._law = PoseDeltaLaw(
+                model,
+                site_name="gripperframe",
+                body_dofs=list(range(len(BODY_JOINTS))),
+                body_joint_names=BODY_JOINTS,
+                home_joints_deg=home_joints_deg,
+                max_dq_deg=max_dq_deg,
+                max_dq_frame_deg=max_dq_frame_deg,
+                gripper_max_distance_mm=gripper_max_distance_mm,
+            )
+        # Stale-hold (real-only): wall-clock of the last pose_delta SendAction;
+        # a gap > stale_timeout_s makes the next solve hold the last joints.
+        self._stale_timeout_s = float(stale_timeout_s)
+        self._last_action_monotonic: float | None = None
+        # Elbow over-fold hard wall (#05 bench): the physical arm binds at
+        # ~+3-4 deg past the folded-rest calibration zero (positive = over-fold,
+        # model qpos == normalised degrees), while the recorded calibration
+        # range overstates that side.  None disables the cap.
+        self._elbow_max_deg = None if elbow_max_deg is None else float(elbow_max_deg)
         # Held by the calibration thread for its whole duration; GetObservation/SendAction use a
         # non-blocking acquire to reject bus access while the robot is being manually moved.
         self._calibration_lock = threading.Lock()
@@ -336,8 +432,8 @@ class SO101FollowerServicer(FollowerServicer):
 
     def _encode_feature_info(self, feature_info: dict[str, Any]) -> dict[str, device_pb2.OneFeatureInfo]:
         # Returns a dict (not a generator): encode_feature/load_feature subscript it by key,
-        # so a generator would raise KeyError. The streaming Get*FeatureInfo methods wrap
-        # the result with iter(...values()) to turn it back into a gRPC response stream.
+        # so a generator would raise KeyError. GetInfo fills the GetInfoResponse feature
+        # fields from the result's ...values().
         result: dict[str, device_pb2.OneFeatureInfo] = {}
         for key, val in feature_info.items():
             if isinstance(val, tuple):
@@ -364,15 +460,88 @@ class SO101FollowerServicer(FollowerServicer):
             )
         return result
 
+    # ------------------------------------------------------------------
+    # Pose-delta backend adapter (the real-arm half of the shared law seam)
+    # ------------------------------------------------------------------
+
+    def _read_qpos_rad(self) -> np.ndarray:
+        """Reads Feetech Present_Position and converts to the model qpos (rad).
+
+        Backend-injected qpos source for the shared law: the bus returns
+        lerobot-normalised values (body joints in degrees, gripper in 0-100,
+        per the registered calibration); the MuJoCo oracle speaks radians with
+        the sim's gripper mapping.  Caller must hold the bus lock.
+        """
+        pos = self.robot.bus.sync_read(
+            "Present_Position", num_retry=self.robot.config.num_read_retries
+        )
+        qpos = np.zeros(len(JOINTS))
+        for i, joint in enumerate(JOINTS):
+            qpos[i] = norm_value_to_rad(joint, float(pos[joint]))
+        return qpos
+
+    def _apply_calibration_qpos_limits(self) -> None:
+        """Tightens the law's IK joint limits to the measured calibration range.
+
+        DEGREES-mode normalisation puts 0 deg at the mid-range of the recorded
+        raw ticks, so the measured range maps to a symmetric +/- half-span in
+        radians -- the same convention the MuJoCo oracle uses (model qpos rad
+        == normalised degrees).  Joints without a valid recorded range keep the
+        model limit.  Pose_delta only.
+        """
+        assert self._law is not None
+        calibration = self.robot.calibration
+        if not calibration:
+            return
+        lo = np.full(len(BODY_JOINTS), -np.inf)
+        hi = np.full(len(BODY_JOINTS), np.inf)
+        for i, joint in enumerate(BODY_JOINTS):
+            mc = calibration.get(joint)
+            if mc is None or mc.range_max <= mc.range_min:
+                continue
+            # sts3215 raw resolution 0..4095 = one full turn (lerobot table).
+            half_span_deg = (mc.range_max - mc.range_min) / 2.0 * 360.0 / 4095.0
+            lo[i] = -math.radians(half_span_deg)
+            hi[i] = math.radians(half_span_deg)
+        # The over-fold hard wall cuts the elbow ceiling no matter how wide the
+        # recorded range is (the calibration only bounds the reachable half-span;
+        # the wall is a one-sided mechanical stop #05 measured at +2~4 deg).
+        if self._elbow_max_deg is not None:
+            elbow = BODY_JOINTS.index("elbow_flex")
+            hi[elbow] = min(hi[elbow], math.radians(self._elbow_max_deg))
+        self._law.ik_solver.set_qpos_limits(lo, hi)
+        logger.info(
+            "IK joint limits tightened to measured calibration range (deg): [%s]",
+            ", ".join(
+                f"{j} [{math.degrees(lo[i]):.1f}, {math.degrees(hi[i]):.1f}]"
+                for i, j in enumerate(BODY_JOINTS)
+            ),
+        )
+
+    def _lock_t_zero_from_bus(self, what: str = "set_reference") -> None:
+        """Re-latches the law reference (T_zero) at the FK of the CURRENT arm pose.
+
+        Clutch re-engage contract (same as the sim adapter): reads the arm under
+        the bus lock and re-anchors; nothing here moves the arm.  Pose_delta only.
+        """
+        assert self._law is not None
+        if not self._acquire_bus(what, timeout=self.bus_call_timeout_s):
+            raise DeviceNotConnectedError(
+                f"Cannot {what}: bus lock busy (stuck call or calibration)."
+            )
+        try:
+            qpos_rad = self._read_qpos_rad()
+        finally:
+            self._release_bus()
+        self._law.lock_reference(qpos_rad)
+
     def GetInfo(self, request, context):
         obs = self._encode_feature_info(self.robot.observation_features)
-        act = self._encode_feature_info(self.robot.action_features)
-        # feedback features 等同 action features(GetFeedback 读 latest_action)。
-        fb = self._encode_feature_info(self.robot.action_features)
+        # Action/feedback schemas are mode-dependent and fixed at construction.
         return device_pb2.GetInfoResponse(
             observation_features=obs.values(),
-            action_features=act.values(),
-            feedback_features=fb.values(),
+            action_features=self._act_ft_info.values(),
+            feedback_features=self._act_ft_info.values(),
         )
 
     def Connect(self, request, context):
@@ -381,6 +550,20 @@ class SO101FollowerServicer(FollowerServicer):
         self._reset_bus_lock_state()
         self._calibrate_error = None
         self._abort_stuck_calibration()
+        if self._law is not None:
+            # Fresh session: clear latch/solve state and the stale-hold clock.
+            self._last_action_monotonic = None
+            self._law.reset()
+            if self.robot.is_calibrated:
+                # IK limits from the measured range BEFORE any solve; then
+                # latch T_zero at the arm's current pose.  Uncalibrated arms
+                # cannot normalise Present_Position; the first solve then
+                # auto-latches once calibration exists.  Reset to the model
+                # range first so a RE-Connect after a looser recalibration
+                # widens back (set_qpos_limits alone only narrows).
+                self._law.ik_solver.reset_qpos_limits()
+                self._apply_calibration_qpos_limits()
+                self._lock_t_zero_from_bus("connect")
         if self.robot.is_calibrated:
             return device_pb2.CalibrationInfo(status=device_pb2.CalibrationStatus.CALIBRATED)
         else:
@@ -437,15 +620,32 @@ class SO101FollowerServicer(FollowerServicer):
     def Calibrate(self, request, context):
         if not self.robot.is_connected:
             self.robot.connect(False)
-        # connect(False) 跳过了 bus.write_calibration()；若标定文件已存在，先同步到 bus，
-        # 使 is_calibrated 反映真实状态（避免已有标定时仍误启动标定线程→白屏）。
-        if self.robot.calibration and not self.robot.is_calibrated and not request.force:
-            self.robot.bus.write_calibration(self.robot.calibration)
+        # Cheap early-out BEFORE touching the bus: a running calibration holds
+        # the bus lock for its whole recording, so any is_calibrated read here
+        # would race it (and the observation stream) on the serial port.
+        with self._calibration_state_lock:
+            if self._calibrating:
+                return device_pb2.CalibrationInfo(status=device_pb2.CalibrationStatus.CALIBRATING)
+        # is_calibrated is a raw EEPROM read: it MUST run under the bus lock.
+        # Reading it unlocked races the observation stream's sync_read on the
+        # same serial port -> SDK "Port is in use!" (real-arm #05 smoke).
+        if not self._acquire_bus("calibrate", timeout=self.bus_call_timeout_s):
+            raise DeviceNotConnectedError(
+                "Cannot calibrate: bus lock busy (stuck call or just released)."
+            )
+        try:
+            # connect(False) 跳过了 bus.write_calibration()；若标定文件已存在，先同步到 bus，
+            # 使 is_calibrated 反映真实状态（避免已有标定时仍误启动标定线程→白屏）。
+            if self.robot.calibration and not self.robot.is_calibrated and not request.force:
+                self.robot.bus.write_calibration(self.robot.calibration)
+            is_calibrated = self.robot.is_calibrated
+        finally:
+            self._release_bus()
         logger.info(
             f"Calibrate RPC received (peer={context.peer()!r}, force={request.force}, "
-            f"is_calibrated={self.robot.is_calibrated})."
+            f"is_calibrated={is_calibrated})."
         )
-        if self.robot.is_calibrated and not request.force:
+        if is_calibrated and not request.force:
             return device_pb2.CalibrationInfo(status=device_pb2.CalibrationStatus.CALIBRATED)
 
         with self._calibration_state_lock:
@@ -496,6 +696,25 @@ class SO101FollowerServicer(FollowerServicer):
         # disconnect() closed the serial port (unblocking any wedged read), so releasing
         # the lock here is safe — no concurrent I/O is possible.
         self._reset_bus_lock_state()
+        return Empty()
+
+    def SetReference(self, request, context):
+        """Re-locks T_zero at the current measured arm pose (clutch re-engage).
+
+        Same contract as the sim adapter: the client calls this on the engage
+        edge so the next dT=0 maps onto the arm's current pose instead of
+        pulling back to the Connect home.  Reads Present_Position under the bus
+        lock; nothing is written -- the arm must not move at re-engage.  In
+        joint mode this is a no-op (no Cartesian reference exists).
+        """
+        if self._law is not None:
+            self._lock_t_zero_from_bus("set_reference")
+            logger.info(
+                "SetReference: T_arm_ref re-locked at current FK pos=[%.4f %.4f %.4f]",
+                *self._law.arm_reference[:3, 3],
+            )
+        else:
+            logger.info("SetReference: no-op (action_mode=%s)", self._action_mode)
         return Empty()
 
     def GetObservation(self, request, context):
@@ -586,9 +805,8 @@ class SO101FollowerServicer(FollowerServicer):
 
     def SendAction(self, request, context):
         act_dict: RobotAction = {}
-        act_feature_info = self._encode_feature_info(self.robot.action_features)
         for act in request.features:
-            load_feature(act, act_feature_info, act_dict, aux_behavior="ignore")
+            load_feature(act, self._act_ft_info, act_dict, aux_behavior="ignore")
         # Hard-gate only on calibration, which owns the bus for its whole manual phase;
         # any other holder is transient (the observation stream's per-tick read), so wait
         # for it instead of rejecting at teleop rate.
@@ -606,18 +824,45 @@ class SO101FollowerServicer(FollowerServicer):
             )
             raise DeviceNotConnectedError("Cannot send action: robot is calibrating.")
         try:
-            self.robot.send_action(act_dict)
+            if self._action_mode == "pose_delta":
+                joint_action = self._solve_pose_delta(act_dict)
+            else:
+                joint_action = act_dict
+            self.robot.send_action(joint_action)
             self.robot.latest_action = act_dict  # Reflect the last action sent, for GetFeedback.
         finally:
             self._release_bus()
-        # 返回 executed。so101 是 JOINT_SPACE(A 类),无 IK,executed ≈ commanded → echo。
-        # B 类(末端位姿 + 服务端 IK)的 adapter 会在此返回 IK 后的真实关节角(ADR-0008)。
-        return device_pb2.Action(features=list(encode_feature(act_feature_info, act_dict)))
+        # Echo the commanded action back (A-class semantics, same as the sim adapter).
+        return device_pb2.ActionResult(
+            features=list(encode_feature(self._act_ft_info, act_dict))
+        )
+
+    def _solve_pose_delta(self, delta_action: dict[str, float]) -> dict[str, float]:
+        """Runs the shared law on one raw leader delta, seeding FK/IK from the
+        arm's measured joints.  Caller must hold the bus lock: the
+        Present_Position read and the send_action write ride the SAME hold, so
+        the 30 Hz observation stream interleaves between actions, never
+        mid-action (bus-contention answer for #04)."""
+        assert self._law is not None
+        qpos_rad = self._read_qpos_rad()
+        now = time.monotonic()
+        stale = (
+            self._last_action_monotonic is not None
+            and now - self._last_action_monotonic > self._stale_timeout_s
+        )
+        self._last_action_monotonic = now
+        sol = self._law.solve(delta_action, qpos_rad, stale=stale)
+        if sol.held:
+            logger.info(
+                "pose_delta hold: stale=%s rejected=%s collided=%s pos_err=%.1fmm "
+                "-- keeping last joints.",
+                sol.stale, sol.rejected, sol.collided, sol.pos_err_m * 1000.0,
+            )
+        return sol.joint_action
 
     def GetFeedback(self, request, context):
         raw_fb = self.robot.latest_action if self.robot.latest_action is not None else {}
-        fb_feature_info = self._encode_feature_info(self.robot.action_features)
-        return encode_feature(fb_feature_info, raw_fb)
+        return encode_feature(self._act_ft_info, raw_fb)
 
     def GetStatus(self, request, context):
         if not self.robot.is_connected:

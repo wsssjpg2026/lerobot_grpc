@@ -4,6 +4,7 @@ import logging
 import random
 import threading
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -58,6 +59,23 @@ def _busy_retry_delay(attempt: int) -> float:
 _LATENCY_SANE_MAX_MS = 10_000.0
 
 
+@dataclass(frozen=True)
+class ActionSafety:
+    """Transport-neutral snapshot of the last follower safety receipt."""
+
+    flags: int = 0
+    applied_mask: int = 0
+    reason: str = ""
+    collision_pair_a: str = ""
+    collision_pair_b: str = ""
+    min_distance_m: float = 0.0
+    pos_err_m: float = 0.0
+    rot_err_rad: float = 0.0
+    manipulability: float = 0.0
+    reject_streak: int = 0
+    reject_duration_s: float = 0.0
+
+
 class GRPCFollower(Robot):
     config_class = GRPCFollowerConfig
     name = "grpc_follower"
@@ -94,11 +112,14 @@ class GRPCFollower(Robot):
 
         self._obs_ft_info: dict[str, device_pb2.OneFeatureInfo] = {}
         self._act_ft_info: dict[str, device_pb2.OneFeatureInfo] = {}
+        self._effective_act_ft_info: dict[str, device_pb2.OneFeatureInfo] = {}
         self._fb_ft_info: dict[str, device_pb2.OneFeatureInfo] = {}
 
         self._latest_obs_ft: RobotObservation = {}
         self._latest_act_ft: RobotAction = {}
+        self._latest_effective_act_ft: RobotAction = {}
         self._latest_fb_ft: dict[str, Any] = {}
+        self._last_action_safety = ActionSafety()
 
         # Persistent observation stream: a background thread holds the GetObservation RPC
         # open and continuously refreshes `_latest_obs_ft` (H264 cameras are decoded here).
@@ -143,6 +164,13 @@ class GRPCFollower(Robot):
                 self._obs_ft_info[fi.key] = fi
             for fi in info.action_features:
                 self._act_ft_info[fi.key] = fi
+            effective_features = (
+                info.effective_action_features
+                if info.effective_action_features
+                else info.action_features
+            )
+            for fi in effective_features:
+                self._effective_act_ft_info[fi.key] = fi
             for fi in info.feedback_features:
                 self._fb_ft_info[fi.key] = fi
         except grpc.RpcError as e:
@@ -157,6 +185,19 @@ class GRPCFollower(Robot):
     def action_features(self) -> dict[str, type | tuple]:
         self._ensure_feature_info()
         return {k: self._decode_feature_info(v)[1] for k, v in self._act_ft_info.items()}
+
+    @property
+    def effective_action_features(self) -> dict[str, type | tuple]:
+        """Features returned after follower-side IK, gates and clipping."""
+        self._ensure_feature_info()
+        return {
+            k: self._decode_feature_info(v)[1]
+            for k, v in self._effective_act_ft_info.items()
+        }
+
+    @property
+    def last_action_safety(self) -> ActionSafety:
+        return self._last_action_safety
 
     @property
     def cameras(self) -> dict[str, None]:
@@ -228,10 +269,13 @@ class GRPCFollower(Robot):
         self._is_calibrated = False
         self._obs_ft_info.clear()
         self._act_ft_info.clear()
+        self._effective_act_ft_info.clear()
         self._fb_ft_info.clear()
         self._latest_obs_ft.clear()
         self._latest_act_ft.clear()
+        self._latest_effective_act_ft.clear()
         self._latest_fb_ft.clear()
+        self._last_action_safety = ActionSafety()
         self._latest_obs_time = 0.0
 
     @check_if_already_connected
@@ -265,6 +309,8 @@ class GRPCFollower(Robot):
                 self._init_feature(fi, self._latest_obs_ft)
             for fi in self._act_ft_info.values():
                 self._init_feature(fi, self._latest_act_ft)
+            for fi in self._effective_act_ft_info.values():
+                self._init_feature(fi, self._latest_effective_act_ft)
             for fi in self._fb_ft_info.values():
                 self._init_feature(fi, self._latest_fb_ft)
 
@@ -548,12 +594,34 @@ class GRPCFollower(Robot):
         if t0 is not None:
             self._stats.record_action((time.perf_counter() - t0) * 1000.0)
 
-        # 解码服务端返回的 executed(so101 A 类 ≈ commanded;B 类为服务端 IK 后关节角)。
-        executed: RobotAction = {}
+        # Decode with the separately negotiated effective schema.  Legacy
+        # joint-space followers advertise no separate schema and fall back to
+        # the command schema during GetInfo.
+        effective: RobotAction = {}
         for feat in resp.features:
-            load_feature(feat, self._act_ft_info, executed)
-        self._latest_act_ft.update(executed)
-        return self._latest_act_ft.copy()
+            load_feature(feat, self._effective_act_ft_info, effective)
+        missing = set(self._effective_act_ft_info) - set(effective)
+        if missing:
+            raise DeviceNotConnectedError(
+                f"Follower response is missing effective action feature(s) {sorted(missing)}."
+            )
+        self._latest_effective_act_ft.update(effective)
+        safety = getattr(resp, "safety", None)
+        if safety is not None:
+            self._last_action_safety = ActionSafety(
+                flags=int(safety.flags),
+                applied_mask=int(safety.applied_mask),
+                reason=str(safety.reason),
+                collision_pair_a=str(safety.collision_pair_a),
+                collision_pair_b=str(safety.collision_pair_b),
+                min_distance_m=float(safety.min_distance_m),
+                pos_err_m=float(safety.pos_err_m),
+                rot_err_rad=float(safety.rot_err_rad),
+                manipulability=float(safety.manipulability),
+                reject_streak=int(safety.reject_streak),
+                reject_duration_s=float(safety.reject_duration_s),
+            )
+        return self._latest_effective_act_ft.copy()
 
     @check_if_not_connected
     def get_feedback(self) -> dict[str, Any]:
@@ -579,6 +647,55 @@ class GRPCFollower(Robot):
             )
 
         return self._latest_fb_ft.copy()
+
+    @check_if_not_connected
+    def set_reference(self) -> None:
+        """Latch the follower's current end-effector pose as the delta origin."""
+        try:
+            self.stub.SetReference(Empty(), timeout=self.data_timeout_s)
+        except grpc.RpcError as e:
+            raise DeviceNotConnectedError(
+                f"Failed to set reference on GRPCFollower at {self.address}: {e}"
+            ) from e
+
+    @check_if_not_connected
+    def hold(self, reason: str = "") -> int:
+        """Latch the remote follower at its measured pose.
+
+        Returns the follower-owned hold epoch.  Repeated calls are idempotent
+        while the same hold remains active.
+        """
+        try:
+            response = self.stub.Hold(
+                device_pb2.HoldRequest(reason=reason),
+                timeout=self.data_timeout_s,
+            )
+        except grpc.RpcError as e:
+            raise DeviceNotConnectedError(
+                f"Failed to hold GRPCFollower at {self.address}: {e}"
+            ) from e
+        if not response.held:
+            raise DeviceNotConnectedError(
+                f"GRPCFollower at {self.address} did not confirm its hold"
+            )
+        return int(response.hold_epoch)
+
+    @check_if_not_connected
+    def resume(self) -> int:
+        """Release the remote hold after a newer reference was captured."""
+        try:
+            response = self.stub.Resume(
+                device_pb2.ResumeRequest(), timeout=self.data_timeout_s
+            )
+        except grpc.RpcError as e:
+            raise DeviceNotConnectedError(
+                f"Failed to resume GRPCFollower at {self.address}: {e}"
+            ) from e
+        if not response.resumed:
+            raise DeviceNotConnectedError(
+                f"GRPCFollower at {self.address} did not confirm resume"
+            )
+        return int(response.hold_epoch)
 
     @check_if_not_connected
     def disconnect(self):

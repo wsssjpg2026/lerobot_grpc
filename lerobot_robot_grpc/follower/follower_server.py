@@ -62,7 +62,7 @@ class FollowerServicer(device_pb2_grpc.RobotServicer, ABC):
 
     @abstractmethod
     def SendAction(self, request, context):
-        """Sends an action to the robot (unary: request=Action, returns executed Action)."""
+        """Sends a command and returns effective features plus safety diagnostics."""
         pass
 
     @abstractmethod
@@ -74,6 +74,39 @@ class FollowerServicer(device_pb2_grpc.RobotServicer, ABC):
     def GetStatus(self, request, context):
         """Gets the status of the robot."""
         pass
+
+    def SetReference(self, request, context):
+        """Re-latch the pose_delta base pose (T_zero) at the current FK.
+
+        Default implementation: not supported.  Mode-aware adapters may return
+        a documented no-op success in joint mode because there is no Cartesian
+        reference to mutate.  Generic followers that do not implement this
+        contract return UNIMPLEMENTED.  ``MuJoCoSO101Servicer`` overrides it
+        to re-lock ``T_zero`` in pose_delta mode and no-op in joint mode.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details(
+            "SetReference is not supported by this follower (no pose_delta base pose)"
+        )
+        from google.protobuf.empty_pb2 import Empty
+
+        return Empty()
+
+    def Hold(self, request, context):
+        """Latch a fail-closed motion hold when supported by the adapter."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Hold is not supported by this follower")
+        from lerobot_robot_grpc.protos import device_pb2
+
+        return device_pb2.HoldResponse(held=False)
+
+    def Resume(self, request, context):
+        """Release a session hold after the adapter has re-referenced."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Resume is not supported by this follower")
+        from lerobot_robot_grpc.protos import device_pb2
+
+        return device_pb2.ResumeResponse(resumed=False)
 
 class FollowerServer:
     """gRPC server for the Follower robot."""

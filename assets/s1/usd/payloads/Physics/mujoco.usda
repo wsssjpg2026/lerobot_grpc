@@ -1,0 +1,968 @@
+#usda 1.0
+(
+    customLayerData = {
+        dictionary cameraSettings = {
+            dictionary Front = {
+                double3 position = (5, 0, 0)
+                double radius = 5
+            }
+            dictionary Perspective = {
+                double3 position = (3.4495065788308668, -0.026967235541538553, 0.5782819876356012)
+                double3 target = (-2.4961107734087027, -0.034359406110381914, 0.28728035223132997)
+            }
+            dictionary Right = {
+                double3 position = (0, -5, 0)
+                double radius = 5
+            }
+            dictionary Top = {
+                double3 position = (0, 0, 5)
+                double radius = 5
+            }
+            string boundCamera = "/OmniverseKit_Persp"
+        }
+        dictionary omni_layer = {
+            string authoring_layer = "./galbot_s1-v2_1_0-A21-ge103in.usd"
+        }
+        dictionary renderSettings = {
+            double "rtx:directLighting:sampledLighting:maxRayUnexposedIntensity" = 6399.9990234375
+            double "rtx:indirectDiffuse:maxRayUnexposedIntensity" = 6399.9990234375
+            double "rtx:pathtracing:fireflyFilter:maxPerEmissiveUnexposedIntensity" = 3199.99951171875
+            double "rtx:pathtracing:fireflyFilter:maxUnexposedIntensityPerSample" = 3199.99951171875
+            double "rtx:pathtracing:fireflyFilter:maxUnexposedIntensityPerSampleDiffuse" = 3199.99951171875
+            double "rtx:raytracing:inscattering:maxRTSampleUnexposedIntensity" = 204799.96875
+            double "rtx:translucency:maxRayUnexposedIntensity" = 19199.998046875
+        }
+    }
+    doc = """Generated from Composed Stage of root layer /home/galbot/桌面/s1_0723/galbot_s1_ge103in/usd/galbot_s1-v2_1_0-A21-ge103in/galbot_s1-v2_1_0-A21-ge103in.usd
+
+
+Generated from Composed Stage of root layer /home/galbot/桌面/s1_0723/galbot_s1_ge103in/usd/galbot_s1-v2_1_0-A21-ge103in/payloads/base.usd
+"""
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+over "galbot_s1_v2_1_0_A21_ge103in"
+{
+    over "base_link"
+    {
+        over "omni_chassis_base_link"
+        {
+            over "omni_chassis_column_mount_link"
+            {
+                over "column_base_link"
+                {
+                }
+            }
+        }
+
+        over "visuals"
+        {
+            over "omni_chassis_base_link"
+            {
+            }
+
+            over "column_base_link"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "omni_chassis_base_link"
+            {
+            }
+
+            over "column_base_link"
+            {
+            }
+        }
+    }
+
+    over "torso_lift_link1"
+    {
+        over "torso_base_link"
+        {
+            over "torso_head_mount_link"
+            {
+            }
+
+            over "torso_left_arm_mount_link"
+            {
+                over "left_arm_base_link"
+                {
+                }
+            }
+
+            over "torso_right_arm_mount_link"
+            {
+                over "right_arm_base_link"
+                {
+                }
+            }
+        }
+
+        over "visuals"
+        {
+            over "torso_base_link"
+            {
+            }
+
+            over "left_arm_base_link"
+            {
+            }
+
+            over "right_arm_base_link"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "torso_base_link"
+            {
+            }
+
+            over "left_arm_base_link"
+            {
+            }
+
+            over "right_arm_base_link"
+            {
+            }
+        }
+    }
+
+    over "joints"
+    {
+        over "torso_lift_joint1" (
+            delete apiSchemas = ["PhysicsJointStateAPI:linear", "PhysicsDriveAPI:linear"]
+        )
+        {
+        }
+
+        over "head_joint1" (
+            delete apiSchemas = ["PhysicsJointStateAPI:angular", "PhysicsDriveAPI:angular"]
+        )
+        {
+        }
+
+        over "head_joint2" (
+            delete apiSchemas = ["PhysicsJointStateAPI:angular", "PhysicsDriveAPI:angular"]
+        )
+        {
+        }
+
+        over "left_arm_joint1" (
+            delete apiSchemas = ["PhysicsJointStateAPI:angular", "PhysicsDriveAPI:angular"]
+        )
+        {
+        }
+
+        over "left_arm_joint2" (
+            delete apiSchemas = ["PhysicsJointStateAPI:angular", "PhysicsDriveAPI:angular"]
+        )
+        {
+        }
+
+        over "left_arm_joint3" (
+            delete apiSchemas = ["PhysicsJointStateAPI:angular", "PhysicsDriveAPI:angular"]
+        )
+        {
+        }
+
+        over "left_arm_joint4" (
+            delete apiSchemas = ["PhysicsJointStateAPI:angular", "PhysicsDriveAPI:angular"]
+        )
+        {
+        }
+
+        over "left_arm_joint5" (
+            delete apiSchemas = ["PhysicsJointStateAPI:angular", "PhysicsDriveAPI:angular"]
+        )
+        {
+        }
+
+        over "left_arm_joint6" (
+            delete apiSchemas = ["PhysicsJointStateAPI:angular", "PhysicsDriveAPI:angular"]
+        )
+        {
+        }
+
+        over "left_arm_joint7" (
+            delete apiSchemas = ["PhysicsJointStateAPI:angular", "PhysicsDriveAPI:angular"]
+        )
+        {
+        }
+
+        over "left_active_joint1" (
+            delete apiSchemas = ["PhysicsJointStateAPI:angular", "PhysicsDriveAPI:angular"]
+        )
+        {
+        }
+
+        over "left_active_joint2" (
+            delete apiSchemas = ["PhysicsJointStateAPI:angular"]
+        )
+        {
+        }
+
+        over "left_passive_joint" (
+            delete apiSchemas = ["PhysicsJointStateAPI:angular"]
+        )
+        {
+        }
+
+        over "right_arm_joint1" (
+            delete apiSchemas = ["PhysicsJointStateAPI:angular", "PhysicsDriveAPI:angular"]
+        )
+        {
+        }
+
+        over "right_arm_joint2" (
+            delete apiSchemas = ["PhysicsJointStateAPI:angular", "PhysicsDriveAPI:angular"]
+        )
+        {
+        }
+
+        over "right_arm_joint3" (
+            delete apiSchemas = ["PhysicsJointStateAPI:angular", "PhysicsDriveAPI:angular"]
+        )
+        {
+        }
+
+        over "right_arm_joint4" (
+            delete apiSchemas = ["PhysicsJointStateAPI:angular", "PhysicsDriveAPI:angular"]
+        )
+        {
+        }
+
+        over "right_arm_joint5" (
+            delete apiSchemas = ["PhysicsJointStateAPI:angular", "PhysicsDriveAPI:angular"]
+        )
+        {
+        }
+
+        over "right_arm_joint6" (
+            delete apiSchemas = ["PhysicsJointStateAPI:angular", "PhysicsDriveAPI:angular"]
+        )
+        {
+        }
+
+        over "right_arm_joint7" (
+            delete apiSchemas = ["PhysicsJointStateAPI:angular", "PhysicsDriveAPI:angular"]
+        )
+        {
+        }
+
+        over "right_active_joint1" (
+            delete apiSchemas = ["PhysicsJointStateAPI:angular", "PhysicsDriveAPI:angular"]
+        )
+        {
+        }
+
+        over "right_active_joint2" (
+            delete apiSchemas = ["PhysicsJointStateAPI:angular"]
+        )
+        {
+        }
+
+        over "right_passive_joint" (
+            delete apiSchemas = ["PhysicsJointStateAPI:angular"]
+        )
+        {
+        }
+
+        over "wheel_steering_joint1" (
+            delete apiSchemas = ["PhysicsJointStateAPI:angular", "PhysicsDriveAPI:angular"]
+        )
+        {
+        }
+
+        over "wheel_driving_joint1" (
+            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+        )
+        {
+        }
+
+        over "wheel_steering_joint2" (
+            delete apiSchemas = ["PhysicsJointStateAPI:angular", "PhysicsDriveAPI:angular"]
+        )
+        {
+        }
+
+        over "wheel_driving_joint2" (
+            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+        )
+        {
+        }
+
+        over "wheel_steering_joint3" (
+            delete apiSchemas = ["PhysicsJointStateAPI:angular", "PhysicsDriveAPI:angular"]
+        )
+        {
+        }
+
+        over "wheel_driving_joint3" (
+            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+        )
+        {
+        }
+
+        over "wheel_steering_joint4" (
+            delete apiSchemas = ["PhysicsJointStateAPI:angular", "PhysicsDriveAPI:angular"]
+        )
+        {
+        }
+
+        over "wheel_driving_joint4" (
+            delete apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular"]
+        )
+        {
+        }
+    }
+
+    over "head_link1"
+    {
+        over "visuals"
+        {
+            over "head_link1"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "head_link1"
+            {
+            }
+        }
+    }
+
+    over "head_link2"
+    {
+        over "head_end_effector_mount_link"
+        {
+        }
+
+        over "visuals"
+        {
+            over "head_link2"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "head_link2"
+            {
+            }
+        }
+    }
+
+    over "left_arm_link1"
+    {
+        over "visuals"
+        {
+            over "left_arm_link1"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "left_arm_link1"
+            {
+            }
+        }
+    }
+
+    over "left_arm_link2"
+    {
+        over "visuals"
+        {
+            over "left_arm_link2"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "left_arm_link2"
+            {
+            }
+        }
+    }
+
+    over "left_arm_link3"
+    {
+        over "visuals"
+        {
+            over "left_arm_link3"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "left_arm_link3"
+            {
+            }
+        }
+    }
+
+    over "left_arm_link4"
+    {
+        over "visuals"
+        {
+            over "left_arm_link4"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "left_arm_link4"
+            {
+            }
+        }
+    }
+
+    over "left_arm_link5"
+    {
+        over "visuals"
+        {
+            over "left_arm_link5"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "left_arm_link5"
+            {
+            }
+        }
+    }
+
+    over "left_arm_link6"
+    {
+        over "visuals"
+        {
+            over "left_arm_link6"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "left_arm_link6"
+            {
+            }
+        }
+    }
+
+    over "left_arm_link7"
+    {
+        over "left_arm_camera_link"
+        {
+        }
+
+        over "left_arm_end_effector_mount_link"
+        {
+            over "left_adapter_flange_link"
+            {
+                over "left_gripper_base_link"
+                {
+                    over "left_fixed_contact_link"
+                    {
+                    }
+                }
+            }
+        }
+
+        over "visuals"
+        {
+            over "left_arm_link7"
+            {
+            }
+
+            over "left_arm_camera_link"
+            {
+            }
+
+            over "left_adapter_flange_link"
+            {
+            }
+
+            over "left_gripper_base_link"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "left_arm_link7"
+            {
+            }
+
+            over "left_arm_camera_link"
+            {
+            }
+
+            over "left_adapter_flange_link"
+            {
+            }
+
+            over "left_gripper_base_link"
+            {
+            }
+        }
+    }
+
+    over "left_active_link1"
+    {
+        over "visuals"
+        {
+            over "left_active_link1"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "left_active_link1"
+            {
+            }
+        }
+    }
+
+    over "left_active_link2"
+    {
+        over "left_active_contact_link"
+        {
+        }
+
+        over "visuals"
+        {
+            over "left_active_link2"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "left_active_link2"
+            {
+            }
+        }
+    }
+
+    over "left_passive_link"
+    {
+        over "visuals"
+        {
+            over "left_passive_link"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "left_passive_link"
+            {
+            }
+        }
+    }
+
+    over "right_arm_link1"
+    {
+        over "visuals"
+        {
+            over "right_arm_link1"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "right_arm_link1"
+            {
+            }
+        }
+    }
+
+    over "right_arm_link2"
+    {
+        over "visuals"
+        {
+            over "right_arm_link2"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "right_arm_link2"
+            {
+            }
+        }
+    }
+
+    over "right_arm_link3"
+    {
+        over "visuals"
+        {
+            over "right_arm_link3"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "right_arm_link3"
+            {
+            }
+        }
+    }
+
+    over "right_arm_link4"
+    {
+        over "visuals"
+        {
+            over "right_arm_link4"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "right_arm_link4"
+            {
+            }
+        }
+    }
+
+    over "right_arm_link5"
+    {
+        over "visuals"
+        {
+            over "right_arm_link5"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "right_arm_link5"
+            {
+            }
+        }
+    }
+
+    over "right_arm_link6"
+    {
+        over "visuals"
+        {
+            over "right_arm_link6"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "right_arm_link6"
+            {
+            }
+        }
+    }
+
+    over "right_arm_link7"
+    {
+        over "right_arm_camera_link"
+        {
+        }
+
+        over "right_arm_end_effector_mount_link"
+        {
+            over "right_adapter_flange_link"
+            {
+                over "right_gripper_base_link"
+                {
+                    over "right_fixed_contact_link"
+                    {
+                    }
+                }
+            }
+        }
+
+        over "visuals"
+        {
+            over "right_arm_link7"
+            {
+            }
+
+            over "right_arm_camera_link"
+            {
+            }
+
+            over "right_adapter_flange_link"
+            {
+            }
+
+            over "right_gripper_base_link"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "right_arm_link7"
+            {
+            }
+
+            over "right_arm_camera_link"
+            {
+            }
+
+            over "right_adapter_flange_link"
+            {
+            }
+
+            over "right_gripper_base_link"
+            {
+            }
+        }
+    }
+
+    over "right_active_link1"
+    {
+        over "visuals"
+        {
+            over "right_active_link1"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "right_active_link1"
+            {
+            }
+        }
+    }
+
+    over "right_active_link2"
+    {
+        over "right_active_contact_link"
+        {
+        }
+
+        over "visuals"
+        {
+            over "right_active_link2"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "right_active_link2"
+            {
+            }
+        }
+    }
+
+    over "right_passive_link"
+    {
+        over "visuals"
+        {
+            over "right_passive_link"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "right_passive_link"
+            {
+            }
+        }
+    }
+
+    over "wheel_steering_link1"
+    {
+        over "visuals"
+        {
+            over "wheel_steering_link1"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "wheel_steering_link1"
+            {
+            }
+        }
+    }
+
+    over "wheel_driving_link1"
+    {
+        over "visuals"
+        {
+            over "wheel_driving_link1"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "wheel_driving_link1"
+            {
+            }
+        }
+    }
+
+    over "wheel_steering_link2"
+    {
+        over "visuals"
+        {
+            over "wheel_steering_link2"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "wheel_steering_link2"
+            {
+            }
+        }
+    }
+
+    over "wheel_driving_link2"
+    {
+        over "visuals"
+        {
+            over "wheel_driving_link2"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "wheel_driving_link2"
+            {
+            }
+        }
+    }
+
+    over "wheel_steering_link3"
+    {
+        over "visuals"
+        {
+            over "wheel_steering_link3"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "wheel_steering_link3"
+            {
+            }
+        }
+    }
+
+    over "wheel_driving_link3"
+    {
+        over "visuals"
+        {
+            over "wheel_driving_link3"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "wheel_driving_link3"
+            {
+            }
+        }
+    }
+
+    over "wheel_steering_link4"
+    {
+        over "visuals"
+        {
+            over "wheel_steering_link4"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "wheel_steering_link4"
+            {
+            }
+        }
+    }
+
+    over "wheel_driving_link4"
+    {
+        over "visuals"
+        {
+            over "wheel_driving_link4"
+            {
+            }
+        }
+
+        over "collisions"
+        {
+            over "wheel_driving_link4"
+            {
+            }
+        }
+    }
+
+    over "root_joint"
+    {
+    }
+
+    over "Looks"
+    {
+    }
+
+    over "VisualMaterials"
+    {
+        over "M_gripper_physics"
+        {
+        }
+    }
+}
+
+over "Render"
+{
+    over "OmniverseKit"
+    {
+        over "HydraTextures"
+        {
+            over "omni_kit_widget_viewport_ViewportTexture_0"
+            {
+            }
+        }
+    }
+
+    over "OmniverseGlobalRenderSettings"
+    {
+    }
+
+    over "Vars"
+    {
+        over "LdrColor"
+        {
+        }
+    }
+}
+

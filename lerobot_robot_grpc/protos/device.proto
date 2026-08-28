@@ -59,6 +59,46 @@ enum FrameQuality {
     FRAME_QUALITY_STALE = 3;
 }
 
+// Teleoperator runtime tracking lifecycle.  FrameQuality remains the generic
+// data-validity gate; this state tells an owned orchestration client what the
+// operator must do next instead of forcing it to infer Pika internals.
+enum TrackingState {
+    TRACKING_STATE_UNSPECIFIED = 0;
+    TRACKING_STATE_READY = 1;
+    TRACKING_STATE_HELD = 2;
+    TRACKING_STATE_LOST = 3;
+    TRACKING_STATE_RECOVERING = 4;
+    TRACKING_STATE_CONFIRM_REQUIRED = 5;
+    TRACKING_STATE_TRANSIENT_LOSS = 6;
+    // The operator confirmation was accepted.  Collection must keep the
+    // follower held while committing follower -> leader references.
+    TRACKING_STATE_REFERENCE_PENDING = 7;
+    // Lighthouse measurements are still fresh, but the fused pose jumped in
+    // a way that cannot safely be distinguished from a localization reset.
+    TRACKING_STATE_POSE_DISCONTINUITY = 8;
+    // The post-jump pose is stable again.  The operator must explicitly align
+    // and confirm a new reference before motion can resume.
+    TRACKING_STATE_POSE_CONFIRM_REQUIRED = 9;
+    // The libsurvive context, Lighthouse cohort, or solved global map changed.
+    TRACKING_STATE_MAP_CHANGED = 10;
+}
+
+// Tracker startup/global-scene readiness.  Unlike TrackingState (the runtime
+// hot-path motion gate), this state is explicitly polled by orchestration
+// before it offers an alignment prompt to the operator.
+enum TrackingReadinessState {
+    TRACKING_READINESS_STATE_UNSPECIFIED = 0;
+    TRACKING_READINESS_STATE_NOT_APPLICABLE = 1;
+    TRACKING_READINESS_STATE_STARTING = 2;
+    TRACKING_READINESS_STATE_WAITING_LIGHTHOUSE = 3;
+    TRACKING_READINESS_STATE_SOLVING_GLOBAL_SCENE = 4;
+    TRACKING_READINESS_STATE_VERIFYING_STABILITY = 5;
+    TRACKING_READINESS_STATE_READY = 6;
+    TRACKING_READINESS_STATE_LOST = 7;
+    TRACKING_READINESS_STATE_MAP_CHANGED = 8;
+    TRACKING_READINESS_STATE_ERROR = 9;
+}
+
 enum CalibrationStatus {
     CALIBRATION_STATUS_UNSPECIFIED = 0;
     CALIBRATED = 1;
@@ -104,6 +144,10 @@ message OneFeature {
     // 不重发 shape/dtype/encoding——热路径省带宽(rdc.v1 NamedTensor-per-frame 的教训)。
     google.protobuf.Timestamp produce_ts = 3;
     FrameQuality quality = 4;
+    // Repeated on each feature of a teleoperator snapshot so the existing
+    // streaming RPC stays self-contained.  Non-tracking devices leave it
+    // UNSPECIFIED and old clients safely ignore this additive field.
+    TrackingState tracking_state = 5;
 }
 
 message CalibrationInfo {
@@ -139,6 +183,100 @@ message Action {
     repeated OneFeature features = 1;
 }
 
+// Result of applying one commanded action.  ``features`` uses the separately
+// negotiated effective-action schema and therefore may differ from the
+// request schema (for example pose-delta input -> joint targets after IK).
+// Field 1 intentionally matches ``Action.features`` so older clients can
+// still decode the effective features and safely ignore the diagnostics.
+message ActionResult {
+    repeated OneFeature features = 1;
+    SafetyReport safety = 2;
+}
+
+message SafetyReport {
+    // Versioned bit fields interpreted by the owned clients.  They stay
+    // compact on the hot path and in the LeRobot dataset ``safety`` vector.
+    uint32 flags = 1;
+    uint32 applied_mask = 2;
+    string reason = 3;
+    string collision_pair_a = 4;
+    string collision_pair_b = 5;
+    float min_distance_m = 6;
+    float pos_err_m = 7;
+    float rot_err_rad = 8;
+    float manipulability = 9;
+    uint32 reject_streak = 10;
+    float reject_duration_s = 11;
+}
+
+// Session-level motion gate.  Hold is latched in the follower and therefore
+// remains effective even if an old pose-delta frame is replayed or a caller
+// accidentally continues SendAction.  Resume is accepted only after a newer
+// follower reference has been captured.
+message HoldRequest {
+    string reason = 1;
+}
+
+message HoldResponse {
+    bool held = 1;
+    uint64 hold_epoch = 2;
+}
+
+message ResumeRequest {}
+
+message ResumeResponse {
+    bool resumed = 1;
+    uint64 hold_epoch = 2;
+}
+
+message TrackingReadiness {
+    TrackingReadinessState state = 1;
+    string reason = 2;
+    uint64 context_epoch = 3;
+    uint64 global_scene_generation = 4;
+    uint64 lighthouse_cohort_generation = 5;
+    uint64 readiness_generation = 6;
+    repeated string expected_lighthouses = 7;
+    repeated string solved_lighthouses = 8;
+    string token = 9;
+    uint32 stable_sample_count = 10;
+    float stable_window_s = 11;
+    float position_spread_m = 12;
+    float rotation_spread_rad = 13;
+    // Number of distinct Lighthouse channels contributing decoded optical
+    // measurements in the SDK's recent health window.  This is live
+    // visibility, not the number of base stations discovered at startup.
+    uint32 visible_lighthouse_count = 14;
+    // Number of recent decoded sync/sweep measurements backing the live
+    // visibility count.  Exposed for operator guidance and diagnostics only;
+    // the leader remains the owner of readiness policy.
+    uint32 recent_optical_measurement_count = 15;
+    // Number of spatially distinct scenes that libsurvive reports in its
+    // latest completed GlobalSceneSolver optimization.  This is not the
+    // Lighthouse-pose callback generation above.
+    uint32 global_scene_count = 16;
+    // Leader-owned minimum scene diversity required for a fresh calibration.
+    // Zero when an already-valid cached map covers the active cohort.
+    uint32 required_global_scene_count = 17;
+    // True when all active Lighthouses were seeded from a valid cached map.
+    bool using_cached_global_scene = 18;
+    // Exact age of the most recent decoded sync/sweep event. Counts are
+    // aggregated over the SDK health window, while age remains suitable for
+    // distinguishing scheduling jitter from a genuinely stale decoder.
+    float decoded_optical_age_s = 19;
+    // Exact age of the most recent raw photodiode/lightcap event.
+    float raw_optical_age_s = 20;
+    // Raw lightcap events in the SDK health window. Raw activity without
+    // decoded activity identifies a wedged Gen2 sync/sweep decoder.
+    uint32 recent_raw_optical_measurement_count = 21;
+}
+
+message SetReferenceRequest {
+    // Opaque token returned by GetTrackingReadiness.  Tracking-backed leaders
+    // reject stale/missing tokens; non-tracking leaders ignore this field.
+    string readiness_token = 1;
+}
+
 // GetInfo:一次往返拿全 schema(替代原先三个 Get*FeatureInfo 流式 RPC)。
 // 连接时调用一次;之后每帧的 OneFeature 不再重发 shape/dtype/encoding。
 message GetInfoRequest {}
@@ -147,6 +285,9 @@ message GetInfoResponse {
     repeated OneFeatureInfo observation_features = 1;
     repeated OneFeatureInfo action_features = 2;
     repeated OneFeatureInfo feedback_features = 3;
+    // Schema of ActionResult.features.  Empty means the legacy invariant
+    // effective_action_features == action_features.
+    repeated OneFeatureInfo effective_action_features = 4;
 }
 
 service Robot {
@@ -161,10 +302,20 @@ service Robot {
 
     rpc GetObservation(google.protobuf.Empty) returns (stream OneFeature);
     // unary:请求=commanded,响应=executed(不再是 fire-and-forget 的 stream→Empty)。
-    rpc SendAction(Action) returns (Action);
+    rpc SendAction(Action) returns (ActionResult);
     rpc GetFeedback(google.protobuf.Empty) returns (stream OneFeature);
 
     rpc GetStatus(google.protobuf.Empty) returns (DeviceInfo);
+
+    // 把当前末端 FK 重锁为 pose_delta 基准 T_zero(与 Teleoperator.SetReference 对偶)。
+    // 离合器再接合时，客户端先验证 leader reference，再调本 RPC；两者都成功前禁止发送动作。
+    // 支持模式分流的 follower 可在 joint 模式返回 no-op 成功；未实现该契约的 follower 返回 UNIMPLEMENTED。
+    rpc SetReference(google.protobuf.Empty) returns (google.protobuf.Empty);
+
+    // Fail-closed session gate used by collection orchestration during
+    // tracker loss, manual clutch, alignment, and emergency handling.
+    rpc Hold(HoldRequest) returns (HoldResponse);
+    rpc Resume(ResumeRequest) returns (ResumeResponse);
 }
 
 service Teleoperator {
@@ -182,6 +333,8 @@ service Teleoperator {
 
     rpc GetStatus(google.protobuf.Empty) returns (DeviceInfo);
 
+    rpc GetTrackingReadiness(google.protobuf.Empty) returns (TrackingReadiness);
+
     // 锁定当前位姿为基准;之后 GetAction 输出相对该基准的 delta(A 类 engage 协议)。
-    rpc SetReference(google.protobuf.Empty) returns (google.protobuf.Empty);
+    rpc SetReference(SetReferenceRequest) returns (google.protobuf.Empty);
 }

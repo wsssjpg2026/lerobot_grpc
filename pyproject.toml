@@ -27,10 +27,25 @@ server = [
     "lerobot[feetech]>=0.6.1,<0.7",
     "av>=15,<16",
 ]
-# Everything (client + server on same machine, typical dev setup)
+# MuJoCo simulation backend (no hardware needed)
+sim = [
+    "mujoco>=3.1,<4",
+]
+# Kinematics (FK/IK via placo, for pose_delta action mode)
+kinematics = [
+    "lerobot[kinematics]>=0.6.1,<0.7",
+]
+# Pika Sense leader (Vive Tracker + gripper sensor)
+pika = [
+    "agx-pypika @ git+https://github.com/wsssjpg2026/pika_sdk.git@v0.2.0a1",
+]
+# Everything (client + server + simulation + IK + Pika, typical dev setup)
 all = [
     "lerobot_robot_grpc[client]",
     "lerobot_robot_grpc[server]",
+    "lerobot_robot_grpc[sim]",
+    "lerobot_robot_grpc[kinematics]",
+    "lerobot_robot_grpc[pika]",
 ]
 # Development: testing only (install on top of [all] or [server])
 dev = [

@@ -35,6 +35,11 @@ Calibrate/CalibrateDone RPCs (use lerobot-calibrate --robot.type=grpc_follower .
     Requires `av` (PyAV) on both sides.
   - jpeg: per-frame JPEG, backward compatible with the original protocol behavior.
 Depth maps ('<cam>_depth') are always RAW regardless of this flag.
+
+`--action_mode=pose_delta` switches the follower to end-effector pose-delta
+actions (Pika Sense teleop): the servicer loads the shared MuJoCo kinematics
+oracle and drives the sim/real-shared PoseDeltaLaw.  Requires a calibrated
+arm; pair with a latch-once leader.
 """
 import logging
 import time
@@ -56,6 +61,17 @@ class ServeFollowerConfig:
     robot: SOFollowerRobotConfig
     address: str = "0.0.0.0:5555"
     camera_encoding: str = "h264"  # "h264" (inter-frame) or "jpeg" (per-frame)
+    # "joint" (default, A-class) or "pose_delta" (B-class: 8-feature EE pose
+    # deltas composed as T_target = T_arm_ref @ Δ and solved by the shared
+    # PoseDeltaLaw with the PikaAnyArm official safety stack -- IK hard
+    # limits, 30° jump warm-start reset, FK consistency 0.3 m, per-frame
+    # step cap, self-collision gate, stale-hold).
+    action_mode: str = "joint"
+    # Elbow over-fold hard wall (deg, positive = past the folded-rest
+    # calibration zero): the physical arm binds at ~+3-4 deg on that side
+    # (#05 bench); the IK elbow ceiling is cut to this value in pose_delta
+    # mode so no solve commands the arm into the wall.  None disables.
+    elbow_max_deg: float | None = 2.0
 
 
 @parser.wrap()
@@ -63,13 +79,19 @@ def main(cfg: ServeFollowerConfig):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", force=True)
 
     robot = SO101FollowerAdapted(cfg.robot)
-    servicer = SO101FollowerServicer(robot, camera_encoding=cfg.camera_encoding)
+    servicer = SO101FollowerServicer(
+        robot,
+        camera_encoding=cfg.camera_encoding,
+        action_mode=cfg.action_mode,
+        elbow_max_deg=cfg.elbow_max_deg,
+    )
     server = FollowerServer(FollowerServerConfig(address=cfg.address), servicer)
     server.start()
     cam_names = list(cfg.robot.cameras.keys())
     logging.info(
-        "SO-101 follower server ready: address=%s serial=%s id=%s cameras=%s camera_encoding=%s",
+        "SO-101 follower server ready: address=%s serial=%s id=%s cameras=%s camera_encoding=%s action_mode=%s",
         cfg.address, cfg.robot.port, cfg.robot.id, cam_names, cfg.camera_encoding,
+        cfg.action_mode,
     )
     try:
         while True:

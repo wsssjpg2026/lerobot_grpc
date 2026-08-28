@@ -35,6 +35,8 @@ This pulls in:
 - `lerobot[hardware]` — keyboard controls (**pynput**), pyserial, deepdiff
 - `lerobot[viz]` — real-time visualization (rerun-sdk, foxglove-sdk)
 - `lerobot[feetech]` — Feetech motor SDK for SO101 hardware
+- `mujoco` and `lerobot[kinematics]` — simulation plus pose-delta FK/IK
+- `agx-pypika` — the pinned Pika Sense SDK fork
 
 ### Option B: Client only (recording/training machine)
 
@@ -47,6 +49,14 @@ pip install -e ".[client]"
 ```bash
 pip install -e ".[server]"
 ```
+
+Real SO101 `--action_mode=pose_delta` uses MuJoCo as its shared kinematics
+oracle, so install `.[server,sim]` for that mode. The plain `.[server]` extra
+is sufficient for joint-space hardware serving.
+
+> **Wire compatibility:** this development line changes both the unary
+> `SendAction` response and the Teleoperator `SetReference` request. Upgrade
+> gRPC clients and servers together; mixed revisions are unsupported.
 
 ### Windows notes
 
@@ -65,7 +75,11 @@ pip install -e ".[dev]"
 pytest tests/
 ```
 
-Current tests cover the leader server's bus-lock safety mechanism (`_acquire_bus` / `_release_bus` / `_bus_watchdog` / `_reset_bus_lock_state`).
+Current tests (11 files in `tests/`) cover the shared pose-delta law and feature
+schema (PikaAnyArm official alignment), the Pika Sense leader's delta computation,
+follower/leader bus-lock safety, MuJoCo DLS-IK recovery, sim and client-side clutch
+semantics, the auto-reference mode, the real SO-101 pose-delta servicer, and the sim
+end-to-end pose-delta pipeline.
 
 ## Video streaming (H.264)
 
@@ -108,6 +122,136 @@ Both `grpc_follower` and `grpc_leader` accept these config parameters via CLI fl
 ## Usage
 
 > **Line continuation**: Examples below use PowerShell syntax (`` ` ``). On bash/Linux, replace `` ` `` with `\`.
+
+### Pika Sense → MuJoCo Galbot S1 left arm
+
+The repository vendors the upstream S1 MJCF, URDF, USD, meshes, and textures
+under `assets/s1/`; provenance and the pinned upstream revision are recorded in
+`assets/s1/UPSTREAM.md`. Install the simulation and Pika extras in the server
+environment before starting the three-terminal development path:
+
+```bash
+conda run -n lerobot-grpc-serve pip install -e ".[sim,pika]"
+```
+
+The production-development path uses four terminals.  `collection-teleop`
+owns alignment, tracker-loss holds, safe re-reference ordering, and all
+operator prompts; stock `lerobot-teleoperate` remains only a direct device
+transport smoke test.
+
+```bash
+# Terminal 1 — full S1 model, left arm + left gripper controlled, viewer on
+mkdir -p /tmp/s1_collection_teleop
+conda run -n lerobot-grpc-serve python examples/serve_mujoco_s1_follower.py \
+  --arm left --torso-home-m 0.6 --address 0.0.0.0:15555 \
+  2>&1 | tee /tmp/s1_collection_teleop/01_s1_follower.log
+```
+
+```bash
+# Terminal 2 — tracking readiness is automatic; Collection owns Enter confirm
+conda run -n lerobot-grpc-serve python examples/serve_pika_sense_leader.py \
+  --port /dev/ttyUSB0 --arm-prefix left --cumulative-clutch \
+  --address 0.0.0.0:5556 \
+  2>&1 | tee /tmp/s1_collection_teleop/02_pika_leader.log
+```
+
+```bash
+# Terminal 3 — collection orchestration server
+conda run -n collection-serve collection-grpc-serve \
+  2>&1 | tee /tmp/s1_collection_teleop/03_collection_server.log
+```
+
+```bash
+# Terminal 4 — all user-facing prompts appear here
+conda run -n collection-client collection-teleop \
+  --robot-endpoint 127.0.0.1:15555 \
+  --teleop-endpoint 127.0.0.1:5556 \
+  --collection-endpoint 127.0.0.1:50051 \
+  --translation-scale 1.5 \
+  2>&1 | tee /tmp/s1_collection_teleop/04_collection_client.log
+```
+
+Terminal 2 returns from device Connect as soon as hardware is established.
+Terminal 4 polls the leader-owned readiness policy and shows the current
+Lighthouse cohort/global-scene/stability phase. It asks the operator to
+arrange Pika and press Enter only after the global scene has enough spatial
+diversity and the one-second optical stability window has converged. On a
+fresh calibration the client guides the operator through at least four
+``move to a different pose -> hold for 3-5 seconds`` captures. A valid cached
+map covering the active Lighthouse cohort skips that recapture. Collection
+holds the follower, captures the leader reference then the follower reference,
+verifies an identity delta, and only then releases motion. During teleoperation a rapid
+Pika gripper squeeze toggles clutch. Any optical interruption long enough to
+hold motion invalidates the session reference and suppresses every pose
+action. Terminal 4 remains in `TRACKING_RECOVERING` for as long as needed while
+the operator returns Pika to Lighthouse view and fresh optical samples settle.
+It then latches `TRACKING_CONFIRM_REQUIRED`: the operator may adjust Pika into
+the desired hand/robot alignment before rapidly squeezing the gripper.
+`TRACKING_REFERENCE_PENDING` acknowledges that squeeze while Collection runs
+the leader-reference → follower-reference → identity transaction. A temporary
+reference precondition failure returns to recovery without ending the session;
+only a successful transaction emits `TRACKING_READY` and resumes motion.
+Initial alignment reference capture allows up to 5 mm / 2 degrees of short
+hand-held spread and waits up to 5 seconds. A temporary precondition failure
+revokes that prompt and returns Collection to `TRACKER_SETTLING`; the follower
+stays held until a new READY generation produces a new Enter prompt.
+
+If another follower already owns `127.0.0.1:5555`, choose a free port (for
+example `15555`) in both Terminal 1's `--address` and Terminal 4's
+`--robot-endpoint`. A more-specific existing localhost listener can otherwise
+receive the connection intended for a new `0.0.0.0:5555` server.
+
+The follower exposes all 22 independent S1 coordinates in native SI units
+while holding the base, 0.6 m torso, head, and right arm at their targets.  Its
+left-arm command is 8D Cartesian intent; its response is a separately
+negotiated 8D effective joint target (seven arm joints plus
+`left_active_joint1`, radians) after IK and safety.  The actual physical result
+remains the next 22D observation.
+
+Safety includes deterministic multi-seed 6D DLS IK, a 10 mm S1 position
+residual gate, rejection of discontinuous IK branches, a 1.2 rad/s joint target
+rate cap, and an arm-base-local workspace normalized by the 1.084483 m S1 TCP
+reach: `|x|,|y| <= 85%`, `z in [-60%,85%]`, and radius in `[20%,85%]`.
+Collision-aware IK is enabled by default: all active body/self/floor distance
+constraints contribute a null-space gradient while the 6D hand pose remains
+the primary task. The soft bands are 6% of reach for self/body/floor pairs and
+10% for cross-arm pairs. It never invents a lateral Cartesian detour; when a
+full pose is unsafe it may only publish the furthest safe prefix on the
+operator-requested Cartesian segment. Every capped path is sampled with no
+more than 0.5-degree joint increments and checked in an independent MuJoCo
+collision model.  The selected arm, wrist and coupled fingers are
+checked against the chassis, wheels, column, torso, head, opposite arm and
+floor. Normal pairs enter the safety gate at 5 mm and release at 8 mm;
+cross-arm pairs enter at 10 mm and release at 15 mm. Distance-increasing
+escape motion remains allowed inside the release margin, so the hysteresis
+does not deadlock retreat. This does not change the upstream model's live
+contact masks. After every reference capture, collision-nullspace motion is
+suppressed for 0.5 seconds so the identity frame is an exact hold. For
+diagnostics, `--no-collision-aware-ik` disables only the soft null-space layer;
+the hard endpoint and swept-path collision gate remains enabled.
+
+The Collection request can apply a bounded translation-only gain. The S1
+example uses `--translation-scale 1.5`, so a 10 mm Pika displacement requests
+15 mm at the S1 hand reference. Quaternion rotation and gripper distance stay
+1:1, and the follower still applies workspace, IK, rate and collision gates to
+the scaled target. Omit the option for the backwards-compatible 1.0 behavior.
+
+Rapidly squeezing the Pika gripper toggles the clutch.  With Collection in the
+loop, disengagement, degraded tracking, and stale tracking all latch an atomic
+arm-plus-gripper follower hold; pose commands are not forwarded.  Stable
+optical recovery plus another rapid squeeze requests re-engagement.  A
+separate 0.5 s follower action watchdog supplies the same atomic hold if the
+client stream itself stops.
+
+Direct stock `lerobot-teleoperate` is only a local data-plane/debug adapter;
+it does not write a dataset or provide Collection's hold/re-reference transaction.
+`collection_grpc` is the recording/orchestration
+path: it latches leader then follower references, stores the effective 8D
+target in standard `action`, stores the 22D state in `observation.state`, and
+adds raw `teleop.intent` plus compact
+`safety=[flags, applied_mask, valid]`; collision-clipped/held frames have
+`valid=0`.  The planned SessionCoordinator
+remains the production-facing deep interface for the final orchestration UI.
 
 ### 1. Start the servers (robot-side)
 
